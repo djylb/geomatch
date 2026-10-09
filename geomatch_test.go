@@ -403,6 +403,38 @@ func TestRealGeoData(t *testing.T) {
 	if !google.Match("www.google.com") || !google.Match("10.1.2.3") || google.Match("qq.com") {
 		t.Error("geosite:google")
 	}
+
+	// Categories and attributes of common rule sets, including codes with !.
+	rules := []string{
+		"geosite:geolocation-!cn", "geosite:tld-!cn", "geosite:category-games@cn", "geosite:google@cn",
+		"geosite:apple-cn", "geosite:china-list", "geosite:gfw", "geosite:private",
+		"geoip:telegram", "geoip:cloudflare", "ext:" + site + ":tld-!cn",
+	}
+	m, err = Compile(rules, Options{GeoData: geo})
+	if err != nil {
+		t.Logf("not every category is in this file: %v", err)
+	}
+	for addr, want := range map[string]bool{"www.google.com": true, "149.154.167.50": true, "1.1.1.1": true, "localhost": true} {
+		if got := m.Match(addr); got != want {
+			t.Errorf("Match(%q) = %v, want %v", addr, got, want)
+		}
+	}
+
+	// The built-in private ranges cover what the file's PRIVATE entry does.
+	file, err := geo.LoadIP("", "private")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fb, bb ipSetBuilder
+	for _, p := range file.Prefixes {
+		fb.addPrefix(p)
+	}
+	for _, p := range privatePrefixes {
+		bb.addPrefix(p)
+	}
+	if f, b := fb.build(), bb.build(); !slices.Equal(f.v4, b.v4) || !slices.Equal(f.v6, b.v6) {
+		t.Errorf("built-in private ranges %v differ from the file's %v", b, f)
+	}
 	codes, err := geo.Codes(site)
 	if err != nil || len(codes) < 100 {
 		t.Fatalf("Codes() = %d codes, %v", len(codes), err)
