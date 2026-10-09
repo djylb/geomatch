@@ -3,9 +3,10 @@
 // geosite.dat files, for access control and traffic routing. It depends only
 // on the standard library.
 //
-// Rules are compiled once into a Matcher, which is immutable and answers a
-// query with a binary search over merged address ranges, a map lookup per
-// domain label, and a scan of any keywords and regular expressions:
+// Rules are compiled once into a Matcher, which is safe for concurrent use
+// and answers a query with a binary search over merged address ranges, a
+// hash table lookup per domain label, and a scan of any keywords and
+// regular expressions:
 //
 //	geo := &geomatch.GeoData{IPFile: "geoip.dat", SiteFile: "geosite.dat"}
 //	m, err := geomatch.Compile([]string{"geoip:cn", "geosite:cn", "10.0.0.0/8"}, geomatch.Options{GeoData: geo})
@@ -43,5 +44,8 @@
 // read as a colon, and lines starting with # or ; are comments. Hosts may be
 // written as URLs or host:port.
 //
-// A Policy turns a Matcher into an allowlist or a denylist.
+// ParseRule reads one rule into a Rule without any geodata, to validate or
+// normalize configuration, and CompileRules compiles parsed rules. A Policy
+// turns a Matcher into an allowlist or a denylist, and MatchRule and
+// Policy.Decide report the rule that matched.
 package geomatch

@@ -3,29 +3,26 @@ package geomatch
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"slices"
-	"strconv"
 	"strings"
+	"sync"
 )
 
 // RuleError reports a rule that Compile skipped.
 type RuleError struct {
-	Rule string
-	Err  error
+	// Index is the position of the rule in the slice given to Compile.
+	Index int
+	Rule  string
+	Err   error
 }
 
 func (e *RuleError) Error() string {
-	return fmt.Sprintf("geomatch: rule %q: %v", e.Rule, e.Err)
+	return fmt.Sprintf("geomatch: rule %d %q: %v", e.Index, e.Rule, e.Err)
 }
 
 func (e *RuleError) Unwrap() error { return e.Err }
-
-var (
-	errEmptyValue = errors.New("empty value")
-	errNotHost    = errors.New("not an IP address, CIDR or domain")
-	errWildcard   = errors.New("a wildcard must be a leading * of a domain or trailing octets of an IPv4 address")
-)
 
 // Options configures Compile.
 type Options struct {
@@ -35,17 +32,22 @@ type Options struct {
 }
 
 // Matcher matches IP addresses and domain names against compiled rules. It
-// is immutable and safe for concurrent use. A nil *Matcher matches nothing.
+// is safe for concurrent use. A nil *Matcher matches nothing.
 type Matcher struct {
 	ipSets   []*ipSet     // address rules, then geoip entries shared through GeoData
 	inverse  []*ipSet     // geoip:!code and reverse_match entries
 	domSets  []*domainSet // domain rules, then geosite entries shared through GeoData
 	ipRules  int
 	domRules int
+
+	probes []probe   // one per compiled rule, in order, for MatchRule
+	once   sync.Once // compiles the regular expressions of probes
 }
 
 // SplitRules splits text into rules, one per line, trimming spaces and
-// dropping empty lines. Comments are kept for Compile to skip.
+// dropping empty lines. Comments are kept for Compile to skip. To report
+// errors by line number, split on newlines yourself: Compile skips empty
+// rules, so RuleError.Index is then the line number less one.
 func SplitRules(text string) []string {
 	var rules []string
 	for line := range strings.Lines(text) {
@@ -62,35 +64,40 @@ func SplitRules(text string) []string {
 // returned error joins a *RuleError for each, and the Matcher holds the
 // valid rules.
 func Compile(rules []string, opts Options) (*Matcher, error) {
-	c := compiler{geo: opts.GeoData}
-	if c.geo == nil {
-		c.geo = &GeoData{}
-	}
+	c := newCompiler(opts)
 	var errs []error
-	for _, rule := range rules {
-		rule = strings.TrimSpace(strings.ReplaceAll(rule, "：", ":"))
-		if rule == "" || rule[0] == '#' || rule[0] == ';' {
+	for i, s := range rules {
+		r, err := ParseRule(s)
+		if errors.Is(err, errNoRule) {
 			continue
 		}
-		if err := c.add(rule); err != nil {
-			errs = append(errs, &RuleError{Rule: rule, Err: err})
+		if err == nil {
+			err = c.add(r)
+		}
+		if err != nil {
+			errs = append(errs, &RuleError{Index: i, Rule: strings.TrimSpace(s), Err: err})
 		}
 	}
-	// Several geo entries become one set, so that a query looks once.
-	if len(c.geoIPs) > 1 {
-		c.geoIPs = []*ipSet{c.geo.mergedIPs(c.geoIPs)}
+	return c.finish(), errors.Join(errs...)
+}
+
+// CompileRules is Compile for parsed rules, such as those ParseRule returns
+// or a program builds. Each rule is checked and normalized as its String
+// form would be.
+func CompileRules(rules []Rule, opts Options) (*Matcher, error) {
+	c := newCompiler(opts)
+	var errs []error
+	for i, r := range rules {
+		s := r.String()
+		n, err := ParseRule(s)
+		if err == nil {
+			err = c.add(n)
+		}
+		if err != nil {
+			errs = append(errs, &RuleError{Index: i, Rule: s, Err: err})
+		}
 	}
-	if len(c.sites) > 1 {
-		c.sites = []*domainSet{c.geo.mergedSites(c.sites)}
-	}
-	m := &Matcher{ipSets: c.geoIPs, inverse: c.inverse, domSets: c.sites, ipRules: c.ipRules, domRules: c.domRules}
-	if own := c.ips.build(); own.ranges() > 0 {
-		m.ipSets = append([]*ipSet{own}, m.ipSets...)
-	}
-	if c.domains.finish(); c.domains.active {
-		m.domSets = append([]*domainSet{&c.domains}, m.domSets...)
-	}
-	return m, errors.Join(errs...)
+	return c.finish(), errors.Join(errs...)
 }
 
 // MustCompile is Compile that panics if a rule is invalid.
@@ -105,6 +112,47 @@ func MustCompile(rules []string, opts Options) *Matcher {
 // Match reports whether addr matches: its host, as HostOf extracts it, is
 // matched as an IP address or else as a domain name.
 func (m *Matcher) Match(addr string) bool {
+	host, ip, isIP := readTarget(addr)
+	if isIP {
+		return m.MatchIP(ip)
+	}
+	return m.matchDomain(host)
+}
+
+// MatchNetAddr is Match for a net.Addr, such as a connection's RemoteAddr:
+// *net.TCPAddr, *net.UDPAddr and *net.IPAddr are matched by IP address
+// without formatting them, Unix socket addresses match no rule, and other
+// addresses are matched by their String.
+func (m *Matcher) MatchNetAddr(a net.Addr) bool {
+	if ip, ok := netAddrIP(a); ok {
+		return m.MatchIP(ip)
+	}
+	switch a.(type) {
+	case nil, *net.UnixAddr:
+		return false
+	}
+	return m.Match(a.String())
+}
+
+// netAddrIP returns the IP address of an IP net.Addr.
+func netAddrIP(a net.Addr) (netip.Addr, bool) {
+	switch a := a.(type) {
+	case *net.TCPAddr:
+		return a.AddrPort().Addr(), true
+	case *net.UDPAddr:
+		return a.AddrPort().Addr(), true
+	case *net.IPAddr:
+		if a == nil {
+			return netip.Addr{}, true
+		}
+		ip, _ := netip.AddrFromSlice(a.IP)
+		return ip, true
+	}
+	return netip.Addr{}, false
+}
+
+// readTarget reads the host of addr, and its IP address if it is one.
+func readTarget(addr string) (host string, ip netip.Addr, isIP bool) {
 	host, numeric := addr, false
 	if plain, num := hostClass(addr); plain {
 		numeric = num
@@ -114,10 +162,10 @@ func (m *Matcher) Match(addr string) bool {
 	}
 	if numeric {
 		if ip, err := netip.ParseAddr(host); err == nil {
-			return m.MatchIP(ip)
+			return host, ip.Unmap().WithZone(""), true
 		}
 	}
-	return m.matchDomain(host)
+	return host, netip.Addr{}, false
 }
 
 // parseIP parses host as an IP address, without building an error for the
@@ -158,7 +206,8 @@ func (m *Matcher) MatchIP(ip netip.Addr) bool {
 }
 
 // MatchDomain reports whether host, a domain name or host:port, matches a
-// domain rule. IP addresses match no domain rule.
+// domain rule. IP addresses match no domain rule. Rules and hosts are ASCII:
+// write internationalized names in their xn-- (punycode) form.
 func (m *Matcher) MatchDomain(host string) bool {
 	if plain, numeric := hostClass(host); !plain || numeric {
 		host = HostOf(host)
@@ -181,19 +230,31 @@ func (m *Matcher) matchDomain(host string) bool {
 	return false
 }
 
+// Rules returns the rules compiled into m, in order.
+func (m *Matcher) Rules() []Rule {
+	if m == nil {
+		return nil
+	}
+	rules := make([]Rule, len(m.probes))
+	for i := range m.probes {
+		rules[i] = m.probes[i].rule.clone()
+	}
+	return rules
+}
+
 // Len returns the number of rules compiled into m.
 func (m *Matcher) Len() int {
 	if m == nil {
 		return 0
 	}
-	return m.ipRules + m.domRules
+	return len(m.probes)
 }
 
-// HasIPRules and HasDomainRules report which kinds of rules m holds, for
+// HasIPRules reports whether m holds rules that match IP addresses, for
 // callers that only see one kind of address.
 func (m *Matcher) HasIPRules() bool { return m != nil && m.ipRules > 0 }
 
-// HasDomainRules reports whether m holds domain rules.
+// HasDomainRules reports whether m holds rules that match domain names.
 func (m *Matcher) HasDomainRules() bool { return m != nil && m.domRules > 0 }
 
 type compiler struct {
@@ -205,146 +266,88 @@ type compiler struct {
 	sites    []*domainSet
 	ipRules  int
 	domRules int
+	probes   []probe
 }
 
-func (c *compiler) add(rule string) error {
-	if kind, value, ok := strings.Cut(rule, ":"); ok {
-		switch strings.ToLower(kind) {
-		case "geoip":
-			return c.addGeoIP(c.geo.IPFile, value)
-		case "ext-ip":
-			file, code, err := splitExt(value)
-			if err != nil {
-				return err
-			}
-			return c.addGeoIP(c.geo.rulePath(file, c.geo.IPFile), code)
-		case "geosite":
-			return c.addGeoSite(c.geo.SiteFile, value)
-		case "ext-domain":
-			file, code, err := splitExt(value)
-			if err != nil {
-				return err
-			}
-			return c.addGeoSite(c.geo.rulePath(file, c.geo.SiteFile), code)
-		case "ext":
-			return c.addExt(value)
-		case "full", "domain", "keyword", "regexp", "dotless":
-			return c.addDomainRule(strings.ToLower(kind), strings.TrimSpace(value))
-		}
+func newCompiler(opts Options) *compiler {
+	c := &compiler{geo: opts.GeoData}
+	if c.geo == nil {
+		c.geo = &GeoData{}
 	}
-	return c.addPlain(rule)
+	return c
 }
 
-// addPlain adds an IP address, a CIDR, an IPv4 wildcard, a *-prefixed domain
-// suffix or a plain domain, which matches as a keyword.
-func (c *compiler) addPlain(rule string) error {
-	if p, ok, err := parseIPv4Wildcard(rule); ok || err != nil {
-		if err != nil {
-			return err
-		}
-		c.ips.addPrefix(p)
-		c.ipRules++
-		return nil
+func (c *compiler) finish() *Matcher {
+	// Several geo entries become one set, so that a query looks once.
+	if len(c.geoIPs) > 1 {
+		c.geoIPs = []*ipSet{c.geo.mergedIPs(c.geoIPs)}
 	}
-	if strings.Contains(rule, "/") && !strings.Contains(rule, "://") {
-		p, err := netip.ParsePrefix(rule)
-		if err != nil {
-			return err
-		}
-		c.ips.addPrefix(p.Masked())
-		c.ipRules++
-		return nil
+	if len(c.sites) > 1 {
+		c.sites = []*domainSet{c.geo.mergedSites(c.sites)}
 	}
-	if suffix, ok := strings.CutPrefix(rule, "*"); ok {
-		flags := uint8(nameExact | nameSub)
-		if s, ok := strings.CutPrefix(suffix, "."); ok {
-			suffix, flags = s, nameSub
-		}
-		host, err := domainValue(suffix)
-		if err != nil {
-			return err
-		}
-		c.domains.addName(host, flags)
-		c.domRules++
-		return nil
+	m := &Matcher{
+		ipSets:   c.geoIPs,
+		inverse:  c.inverse,
+		domSets:  c.sites,
+		ipRules:  c.ipRules,
+		domRules: c.domRules,
+		probes:   c.probes,
 	}
-	if strings.Contains(rule, "*") {
-		return errWildcard
+	if own := c.ips.build(); own.ranges() > 0 {
+		m.ipSets = append([]*ipSet{own}, m.ipSets...)
 	}
-	host := HostOf(rule)
-	if ip, err := netip.ParseAddr(host); err == nil {
-		c.ips.addAddr(ip)
-		c.ipRules++
-		return nil
+	if c.domains.finish(); c.domains.active {
+		m.domSets = append([]*domainSet{&c.domains}, m.domSets...)
 	}
-	host, err := domainValue(host)
-	if err != nil {
-		return err
-	}
-	c.domains.addKeyword(host)
-	c.domRules++
-	return nil
+	return m
 }
 
-func (c *compiler) addDomainRule(kind, value string) error {
-	switch kind {
-	case "regexp":
-		if value == "" {
-			return errEmptyValue
-		}
-		if err := c.domains.addRegexp(value); err != nil {
-			return err
-		}
-	case "dotless":
-		if value == "" {
-			c.domains.dotlessAny = true
-			break
-		}
-		if strings.Contains(value, ".") {
-			return errors.New("dotless value contains a dot")
-		}
-		text, err := keywordValue(value)
+// add compiles a parsed rule.
+func (c *compiler) add(r Rule) error {
+	p := probe{rule: r}
+	switch r.Kind {
+	case RuleIP:
+		c.ips.addPrefix(r.Prefix)
+		c.ipRules++
+	case RuleGeoIP, RuleGeoSite, RuleExt:
+		geo, site, err := c.geo.compiledRule(r)
 		if err != nil {
 			return err
 		}
-		c.domains.dotless = append(c.domains.dotless, text)
-	case "keyword":
-		text, err := keywordValue(value)
-		if err != nil {
-			return err
-		}
-		c.domains.addKeyword(text)
-	default:
-		host, err := domainValue(value)
-		if err != nil {
-			return err
-		}
-		if kind == "full" {
-			c.domains.addName(host, nameExact)
+		if geo != nil {
+			c.addGeoIPSet(geo, r.Negate)
 		} else {
-			c.domains.addName(host, nameExact|nameSub)
+			c.addSiteSet(site)
 		}
+		p.geo, p.site = geo, site
+	case RuleFull:
+		c.domains.addName(r.Value, nameExact)
+		c.domRules++
+	case RuleDomain:
+		c.domains.addName(r.Value, nameExact|nameSub)
+		c.domRules++
+	case RuleSubdomain:
+		c.domains.addName(r.Value, nameSub)
+		c.domRules++
+	case RuleKeyword:
+		c.domains.addKeyword(r.Value)
+		c.domRules++
+	case RuleRegexp:
+		if err := c.domains.addRegexp(r.Value); err != nil {
+			return err
+		}
+		c.domRules++
+	case RuleDotless:
+		if r.Value == "" {
+			c.domains.dotlessAny = true
+		} else {
+			c.domains.dotless = append(c.domains.dotless, r.Value)
+		}
+		c.domRules++
+	default:
+		return fmt.Errorf("unknown rule kind %d", r.Kind)
 	}
-	c.domRules++
-	return nil
-}
-
-// addGeoIP adds code of the geoip file at path, or the addresses outside it
-// for !code.
-func (c *compiler) addGeoIP(path, code string) error {
-	code = strings.TrimSpace(code)
-	negate := strings.HasPrefix(code, "!")
-	if negate {
-		code = strings.TrimSpace(code[1:])
-	}
-	if code == "" {
-		return errEmptyValue
-	}
-	geo, _, err := c.geo.compiled(path, code, nil, kindIP)
-	if err != nil {
-		return err
-	}
-	c.addGeoIPSet(geo, negate)
+	c.probes = append(c.probes, p)
 	return nil
 }
 
@@ -366,83 +369,6 @@ func (c *compiler) addSiteSet(site *domainSet) {
 	c.domRules++
 }
 
-// addGeoSite adds code of the geosite file at path, optionally followed by
-// @attributes that every entry added must have.
-func (c *compiler) addGeoSite(path, value string) error {
-	code, attrs, err := splitAttrs(value)
-	if err != nil {
-		return err
-	}
-	_, site, err := c.geo.compiled(path, code, attrs, kindSite)
-	if err != nil {
-		return err
-	}
-	c.addSiteSet(site)
-	return nil
-}
-
-// addExt adds file:code from a geoip or geosite file.
-func (c *compiler) addExt(value string) error {
-	file, code, err := splitExt(value)
-	if err != nil {
-		return err
-	}
-	negate := strings.HasPrefix(code, "!")
-	if negate {
-		code = strings.TrimSpace(code[1:])
-	}
-	code, attrs, err := splitAttrs(code)
-	if err != nil {
-		return err
-	}
-	path := c.geo.rulePath(file, cmpOr(c.geo.SiteFile, c.geo.IPFile))
-	geo, site, err := c.geo.compiled(path, code, attrs, kindAny)
-	switch {
-	case err != nil:
-		return err
-	case geo != nil:
-		if len(attrs) > 0 {
-			return errors.New("attributes on a geoip entry")
-		}
-		c.addGeoIPSet(geo, negate)
-	case negate:
-		return errors.New("! on a geosite entry")
-	default:
-		c.addSiteSet(site)
-	}
-	return nil
-}
-
-// splitExt splits file:code at the last colon, since a code has none and a
-// Windows path such as C:\geo\site.dat does.
-func splitExt(value string) (file, code string, err error) {
-	value = strings.TrimSpace(value)
-	i := strings.LastIndexByte(value, ':')
-	if i < 0 {
-		return "", "", errors.New("want file:code")
-	}
-	file, code = strings.TrimSpace(value[:i]), strings.TrimSpace(value[i+1:])
-	if file == "" || code == "" {
-		return "", "", errors.New("want file:code")
-	}
-	return file, code, nil
-}
-
-// splitAttrs splits code@attr@attr.
-func splitAttrs(value string) (code string, attrs []string, err error) {
-	parts := strings.Split(value, "@")
-	code = strings.TrimSpace(parts[0])
-	if code == "" {
-		return "", nil, errEmptyValue
-	}
-	for _, a := range parts[1:] {
-		if a = strings.ToLower(strings.TrimSpace(a)); a != "" {
-			attrs = append(attrs, a)
-		}
-	}
-	return code, attrs, nil
-}
-
 // filterAttrs returns the domains that have every attribute in attrs.
 func filterAttrs(domains []Domain, attrs []string) []Domain {
 	if len(attrs) == 0 {
@@ -452,83 +378,11 @@ func filterAttrs(domains []Domain, attrs []string) []Domain {
 next:
 	for _, d := range domains {
 		for _, a := range attrs {
-			if !containsString(d.Attrs, a) {
+			if !slices.Contains(d.Attrs, a) {
 				continue next
 			}
 		}
 		out = append(out, d)
 	}
 	return out
-}
-
-func containsString(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
-			return true
-		}
-	}
-	return false
-}
-
-// domainValue normalizes the domain of a full:, domain: or *-prefixed rule:
-// lowercase, without a trailing dot, and nothing that cannot be part of a
-// host name.
-func domainValue(value string) (string, error) {
-	host := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(value), "."))
-	switch {
-	case host == "":
-		return "", errEmptyValue
-	case strings.ContainsAny(host, " \t/?#@:%*[]"):
-		return "", errNotHost
-	}
-	if _, err := netip.ParseAddr(host); err == nil {
-		return "", errors.New("an IP address in a domain rule")
-	}
-	return host, nil
-}
-
-// keywordValue normalizes the text of a keyword: or dotless: rule, which is
-// matched as given, lowercase.
-func keywordValue(value string) (string, error) {
-	text := strings.ToLower(strings.TrimSpace(value))
-	switch {
-	case text == "":
-		return "", errEmptyValue
-	case strings.ContainsAny(text, " \t"):
-		return "", errors.New("spaces in a keyword")
-	}
-	return text, nil
-}
-
-// parseIPv4Wildcard parses an IPv4 address whose trailing octets are *, such
-// as 10.* or 192.168.*.*. It reports whether rule looked like one.
-func parseIPv4Wildcard(rule string) (netip.Prefix, bool, error) {
-	if !strings.HasSuffix(rule, "*") || strings.ContainsAny(rule, ":/") || strings.HasPrefix(rule, "*") {
-		return netip.Prefix{}, false, nil
-	}
-	parts := strings.Split(rule, ".")
-	if len(parts) < 2 || len(parts) > 4 {
-		return netip.Prefix{}, false, nil
-	}
-	var octets [4]byte
-	fixed := 0
-	for i, part := range parts {
-		if part == "*" {
-			continue
-		}
-		if fixed != i {
-			return netip.Prefix{}, true, errWildcard
-		}
-		v, err := strconv.ParseUint(part, 10, 8)
-		if err != nil {
-			// Not an address: a domain such as example.* is not supported.
-			return netip.Prefix{}, false, nil
-		}
-		octets[i] = byte(v)
-		fixed++
-	}
-	if fixed == 0 {
-		return netip.Prefix{}, true, errWildcard
-	}
-	return netip.PrefixFrom(netip.AddrFrom4(octets), fixed*8), true, nil
 }

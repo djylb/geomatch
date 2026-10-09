@@ -151,8 +151,8 @@ func TestCompileRules(t *testing.T) {
 	if m.MatchDomain("192.0.2.1") || !m.MatchIP(netip.MustParseAddr("192.0.2.1")) {
 		t.Error("MatchDomain/MatchIP mix up addresses and names")
 	}
-	any := MustCompile([]string{"dotless:"}, Options{})
-	if !any.Match("localhost") || any.Match("a.b") {
+	dotless := MustCompile([]string{"dotless:"}, Options{})
+	if !dotless.Match("localhost") || dotless.Match("a.b") {
 		t.Error("dotless: without a value")
 	}
 	var nilMatcher *Matcher
@@ -167,6 +167,9 @@ func TestCompileErrors(t *testing.T) {
 		"dotless:a.b", "geoip:", "geosite:", "geoip:cn", "ext:file", "ext::code", "keyword:a b",
 	}
 	m, err := Compile(append([]string{"192.0.2.1"}, bad...), Options{})
+	if m == nil || err == nil {
+		t.Fatalf("Compile() = %v, %v; want a Matcher and errors", m, err)
+	}
 	if m.Len() != 1 || !m.Match("192.0.2.1") {
 		t.Fatalf("valid rule lost: Len() = %d", m.Len())
 	}
@@ -182,7 +185,7 @@ func TestCompileErrors(t *testing.T) {
 		t.Fatalf("errors for %q, want %q", ruleErrs, bad)
 	}
 	var geoErr *RuleError
-	if !errors.As(err, &geoErr) || !strings.Contains(err.Error(), `rule "geoip:cn"`) {
+	if !errors.As(err, &geoErr) || !strings.Contains(err.Error(), `rule 11 "geoip:cn"`) {
 		t.Fatalf("error text = %v", err)
 	}
 	if _, err := Compile([]string{"geoip:cn"}, Options{}); !errors.Is(err, ErrNoGeoData) {

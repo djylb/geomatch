@@ -86,12 +86,6 @@ func (b *ipSetBuilder) addPrefix(p netip.Prefix) {
 	b.v6 = append(b.v6, range6{u128{v.hi &^ mask.hi, v.lo &^ mask.lo}, u128{v.hi | mask.hi, v.lo | mask.lo}})
 }
 
-// addAddr adds a single address.
-func (b *ipSetBuilder) addAddr(a netip.Addr) {
-	a = a.Unmap().WithZone("")
-	b.addPrefix(netip.PrefixFrom(a, a.BitLen()))
-}
-
 // build sorts and merges the ranges. The builder can be reused afterwards.
 func (b *ipSetBuilder) build() *ipSet {
 	s := &ipSet{}

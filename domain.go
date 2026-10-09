@@ -13,16 +13,15 @@ import (
 type domainSet struct {
 	names      map[string]uint8 // full: and suffix rules until finish
 	table      *domainTable     // names after finish
+	index      *literalIndex    // keywords, then the literals of litOwner
 	keywords   []string
 	regexps    []*regexp.Regexp
 	lits       []string // the literal each regexp requires, or ""
 	dotless    []string
+	litOwner   []int // the regexp of each literal after the keywords
+	free       []int // regexps without a literal
 	dotlessAny bool
-
-	index    *literalIndex // keywords, then the literals of litOwner
-	litOwner []int         // the regexp of each literal after the keywords
-	free     []int         // regexps without a literal
-	active   bool          // some rule was added
+	active     bool // some rule was added
 }
 
 // addName adds a full: or suffix rule with nameExact and nameSub flags.

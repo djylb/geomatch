@@ -5,12 +5,14 @@ Match IP addresses and domain names against routing rules, including
 for access control and traffic routing in Go.
 
 - No dependencies beyond the standard library, and builds on every Go port.
-- Rules compile into an immutable `Matcher` safe for concurrent use; queries
-  of lowercase hosts do not allocate.
+- Rules compile into a `Matcher` safe for concurrent use; queries of lowercase
+  hosts do not allocate.
 - Geodata files are indexed on first use, so a rule reads only its own entry
   of a file of tens of megabytes, and files changed on disk are picked up.
 - Matchers compiled with one `GeoData` share each compiled `geoip:` and
   `geosite:` entry, so many policies that use `geosite:cn` hold it once.
+- Geodata can come from the file system or any `fs.FS`, such as an
+  `embed.FS`.
 
 ## Install
 
@@ -21,8 +23,7 @@ go get github.com/djylb/geomatch
 ## Usage
 
 ```go
-func newMatcher() (*geomatch.Matcher, error) {
-	geo := &geomatch.GeoData{IPFile: "conf/geoip.dat", SiteFile: "conf/geosite.dat"}
+func newMatcher(geo *geomatch.GeoData) *geomatch.Matcher {
 	m, err := geomatch.Compile([]string{
 		"geoip:cn",
 		"geosite:cn",
@@ -31,10 +32,11 @@ func newMatcher() (*geomatch.Matcher, error) {
 	}, geomatch.Options{GeoData: geo})
 	if err != nil {
 		// Invalid rules, or rules whose geodata could not be read, were
-		// skipped; m holds the others.
+		// skipped; m holds the others. Each is a *geomatch.RuleError with
+		// the rule's index.
 		log.Print(err)
 	}
-	return m, nil
+	return m
 }
 
 func route(m *geomatch.Matcher, target string) string {
@@ -45,19 +47,66 @@ func route(m *geomatch.Matcher, target string) string {
 }
 ```
 
-A `Policy` turns a `Matcher` into an allowlist or a denylist:
+`MatchIP` takes a `netip.Addr`, `MatchNetAddr` a `net.Addr` such as a
+connection's `RemoteAddr` (without formatting it), and `MatchDomain` a host
+name that is never read as an IP address. `HostOf` extracts the host that
+`Match` uses from an address or URL. Hosts and rules are ASCII: write
+internationalized names in their `xn--` form, as geosite files do.
+
+### Policies
+
+A `Policy` turns a `Matcher` into an allowlist or a denylist. `Decide` also
+reports the rule that decided, for logs:
 
 ```go
-func allowClient(rules *geomatch.Matcher, remote net.Addr) bool {
-	p := geomatch.Policy{Mode: geomatch.Allowlist, Rules: rules}
-	return p.Allows(remote.String())
+func checkClient(p geomatch.Policy, remote net.Addr) bool {
+	d := p.Decide(remote.String())
+	if !d.Allowed && d.Matched {
+		log.Printf("%v denied by %v", remote, d.Rule)
+	}
+	return d.Allowed
 }
 ```
 
-`SplitRules` splits a multi-line configuration value into rules. `HostOf`
-extracts the host that `Match` uses from an address or URL. `MatchIP` takes a
-`netip.Addr` without any parsing, and `MatchDomain` a host name, also as
-`host:port`, that is never treated as an IP address.
+`Mode` reads and writes its name in configuration files (`"allowlist"`,
+`"denylist"`, `"off"`). It also reads `whitelist`, `blacklist`, `allow`,
+`deny` and the numbers `0` to `2`, which JSON may give as numbers.
+
+### Geodata
+
+```go
+//go:embed geo/geoip.dat geo/geosite.dat
+var geoFiles embed.FS
+
+var geo = &geomatch.GeoData{FS: geoFiles, IPFile: "geo/geoip.dat", SiteFile: "geo/geosite.dat"}
+```
+
+Without `FS`, the files are read from the operating system. A file updated in
+place or replaced is indexed again the next time a rule needs it; compile the
+rules again to pick up new data, which reuses everything compiled from files
+that did not change. `GeoData.LoadIP`, `LoadSite` and `Codes` read the files
+directly, for example to list the categories a geosite file offers.
+
+### Parsed rules
+
+`ParseRule` checks a rule without reading any geodata, for example to
+validate configuration input, and returns it in a normal form whose `String`
+is the canonical spelling. `CompileRules` compiles parsed or built rules, and
+`Matcher.Rules` and `MatchRule` return the rules of a `Matcher`:
+
+```go
+func validate(lines []string) error {
+	for i, line := range lines {
+		if geomatch.IsComment(line) {
+			continue
+		}
+		if _, err := geomatch.ParseRule(line); err != nil {
+			return fmt.Errorf("line %d: %w", i+1, err)
+		}
+	}
+	return nil
+}
+```
 
 ## Rules
 
@@ -86,15 +135,5 @@ a colon, hosts may be written as URLs or `host:port`, and lines starting with
 `#` or `;` are comments. Relative file names of `ext` rules are looked up in
 `GeoData.Dir`, or next to `SiteFile` or `IPFile`. IP rules never match domain
 names and domain rules never match IP addresses; IPv4-mapped IPv6 addresses
-match as IPv4.
-
-`GeoData.LoadIP`, `LoadSite` and `Codes` read the files directly, at the paths
-given, for example to list the categories a geosite file offers. A file
-replaced on disk is indexed again on the next lookup.
-
-Notes on the rules:
-
-- `regexp:` matches case-insensitively.
-- `dotless:` takes plain text, not a regular expression fragment.
-- `geoip:private` works without a geoip file.
-- `ext:` accepts either kind of file; `ext-ip:` and `ext-domain:` name the kind.
+match as IPv4. `regexp:` matches regardless of case, and `dotless:` takes
+plain text.

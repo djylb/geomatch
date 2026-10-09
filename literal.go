@@ -106,10 +106,8 @@ func (x *literalIndex) scan(text string, hit func(id int32) bool) bool {
 			s = x.nodes[s].fail
 		}
 		for d := s; d != 0; d = x.nodes[d].dict {
-			for _, id := range x.nodes[d].out {
-				if hit(id) {
-					return true
-				}
+			if slices.ContainsFunc(x.nodes[d].out, hit) {
+				return true
 			}
 		}
 	}
@@ -156,6 +154,11 @@ func longestRequired(re *syntax.Regexp) string {
 			}
 		}
 		return best
+	case syntax.OpNoMatch, syntax.OpEmptyMatch, syntax.OpCharClass, syntax.OpAnyCharNotNL, syntax.OpAnyChar,
+		syntax.OpBeginLine, syntax.OpEndLine, syntax.OpBeginText, syntax.OpEndText,
+		syntax.OpWordBoundary, syntax.OpNoWordBoundary, syntax.OpStar, syntax.OpQuest, syntax.OpAlternate:
+		// No text that every match contains.
+	default:
 	}
 	return ""
 }

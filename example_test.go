@@ -50,3 +50,40 @@ func ExampleGeoData_Codes() {
 	}
 	fmt.Println(len(codes), "geosite categories")
 }
+
+func ExampleParseRule() {
+	for _, s := range []string{"*Example.COM", "GEOSITE:Google@CN", "10.1.2.3/8", "foo*bar"} {
+		r, err := geomatch.ParseRule(s)
+		if err != nil {
+			fmt.Println("invalid:", err)
+			continue
+		}
+		fmt.Println(r)
+	}
+	// Output:
+	// domain:example.com
+	// geosite:google@cn
+	// 10.0.0.0/8
+	// invalid: a wildcard must be a leading * of a domain or trailing octets of an IPv4 address
+}
+
+func ExampleMatcher_MatchRule() {
+	m := geomatch.MustCompile([]string{"keyword:ads", "domain:example.com", "10.0.0.0/8"}, geomatch.Options{})
+	for _, addr := range []string{"ads.example.com", "www.example.com", "10.1.2.3:443", "8.8.8.8"} {
+		rule, ok := m.MatchRule(addr)
+		fmt.Println(addr, rule, ok)
+	}
+	// Output:
+	// ads.example.com keyword:ads true
+	// www.example.com domain:example.com true
+	// 10.1.2.3:443 10.0.0.0/8 true
+	// 8.8.8.8  false
+}
+
+func ExamplePolicy_Decide() {
+	mode, _ := geomatch.ParseMode("blacklist")
+	p := geomatch.Policy{Mode: mode, Rules: geomatch.MustCompile([]string{"domain:blocked.example"}, geomatch.Options{})}
+	d := p.Decide("cdn.blocked.example:443")
+	fmt.Println(p.Mode, d.Allowed, d.Rule)
+	// Output: denylist false domain:blocked.example
+}

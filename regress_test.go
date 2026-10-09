@@ -229,8 +229,11 @@ func TestPrivateFallbackOnBadRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	m, err := Compile([]string{"geoip:private"}, Options{GeoData: &GeoData{IPFile: path}})
-	if err != nil || !m.Match("10.0.0.1") {
-		t.Fatalf("geoip:private with a bad record = %v, matches 10.0.0.1 %v", err, m.Match("10.0.0.1"))
+	if err != nil {
+		t.Fatalf("geoip:private with a bad record: %v", err)
+	}
+	if !m.Match("10.0.0.1") {
+		t.Fatal("geoip:private with a bad record does not match 10.0.0.1")
 	}
 }
 
@@ -246,5 +249,58 @@ func TestGeoKindMismatch(t *testing.T) {
 	m := MustCompile([]string{"ext:geosite.dat:google", "ext:geoip.dat:cn"}, Options{GeoData: geo})
 	if !m.Match("google.com") || !m.Match("1.2.3.4") || m.Match("8.8.8.8") {
 		t.Fatal("correct ext: rules were poisoned by the wrong ones")
+	}
+}
+
+// TestLeadingDotKeyword checks that a plain rule with a leading dot matches
+// subdomains as a keyword, and not the domain itself.
+func TestLeadingDotKeyword(t *testing.T) {
+	m := MustCompile([]string{".example.com"}, Options{})
+	if !m.Match("www.example.com") || m.Match("example.com") {
+		t.Fatal(".example.com does not match subdomains only")
+	}
+}
+
+// TestRulesCannotChangeMatcher checks that the rules a Matcher returns do
+// not share memory with it.
+func TestRulesCannotChangeMatcher(t *testing.T) {
+	m := MustCompile([]string{"ext-domain:geosite.dat:cn@cn"}, Options{GeoData: testGeoData(t)})
+	m.Rules()[0].Attrs[0] = "ads"
+	r, ok := m.MatchRule("qq.com")
+	r.Attrs[0] = "ads"
+	if !ok || m.Rules()[0].String() != "ext-domain:geosite.dat:cn@cn" {
+		t.Fatalf("rules changed through returned values: %v", m.Rules())
+	}
+	if r, _ := m.MatchRule("qq.com"); r.String() != "ext-domain:geosite.dat:cn@cn" {
+		t.Fatalf("MatchRule = %v", r)
+	}
+}
+
+// TestGeoDataDirFSReplaced checks that a file of an os.DirFS replaced by
+// one of the same size and time is indexed again.
+func TestGeoDataDirFSReplaced(t *testing.T) {
+	dir := t.TempDir()
+	name := writeDat(t, dir, "geoip.dat",
+		datEntry{code: "AA", cidrs: []string{"1.2.3.0/24"}},
+		datEntry{code: "BB", cidrs: []string{"5.6.7.0/24"}})
+	geo := &GeoData{FS: os.DirFS(dir), IPFile: "geoip.dat"}
+	if !MustCompile([]string{"geoip:aa"}, Options{GeoData: geo}).Match("1.2.3.4") {
+		t.Fatal("geoip:aa does not match")
+	}
+	fi, err := os.Stat(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := writeDat(t, dir, "next.dat",
+		datEntry{code: "BB", cidrs: []string{"1.2.3.0/24"}},
+		datEntry{code: "AA", cidrs: []string{"5.6.7.0/24"}})
+	if err := os.Chtimes(next, fi.ModTime(), fi.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(next, name); err != nil {
+		t.Fatal(err)
+	}
+	if m := MustCompile([]string{"geoip:aa"}, Options{GeoData: geo}); !m.Match("5.6.7.8") || m.Match("1.2.3.4") {
+		t.Fatal("replaced file not indexed again")
 	}
 }

@@ -1,15 +1,20 @@
 package geomatch
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/netip"
 	"os"
+	"path"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
+	"weak"
 )
 
 var (
@@ -53,7 +58,10 @@ type GeoIP struct {
 // GeoData reads geoip.dat and geosite.dat files, protobuf GeoIPList and
 // GeoSiteList messages. Opening a file indexes its entries by code, so a
 // lookup reads only the entry it needs, and a file that changes on disk, or
-// is replaced, is indexed again on the next lookup. The entries compiled for
+// is replaced, is indexed again on the next lookup. A change is seen in the
+// file's size, modification time or identity, so a file system without
+// modification times, such as an embed.FS, is taken not to change in place
+// with the same size. The entries compiled for
 // rules are kept, so that every Matcher compiled with the same GeoData shares
 // them: many policies using geosite:cn hold it once. The methods are safe for
 // concurrent use. The zero value has no default files, so only ext: rules
@@ -66,16 +74,22 @@ type GeoData struct {
 	// Dir is where relative file names of ext: rules are looked up; empty
 	// means the directory of SiteFile, or of IPFile, for the rule's kind.
 	Dir string
+	// FS, if set, holds the files, such as an embed.FS or an fs.FS of data
+	// fetched at run time; the paths above are then slash-separated paths
+	// in it. Nil reads the operating system's files.
+	FS fs.FS
 
-	mu     sync.Mutex
-	files  map[string]*datFile
-	combos map[string]any // merged *domainSet and *ipSet by comboKey
+	mu         sync.Mutex
+	files      map[string]*datFile
+	siteCombos map[string]weak.Pointer[domainSet] // merged entries by comboKey,
+	ipCombos   map[string]weak.Pointer[ipSet]     // kept while a Matcher uses them
 }
 
 // datFile is the index of one version of a file and the entries compiled
 // from it, which every Matcher compiled with the GeoData shares.
 type datFile struct {
-	info     os.FileInfo
+	info     fs.FileInfo
+	data     []byte             // the contents of a file without ReadAt
 	index    map[string]span    // by upper-case code
 	kinds    map[string]recKind // of the codes read so far
 	ipSets   map[string]*geoIPSet
@@ -139,20 +153,24 @@ func (g *GeoData) Codes(file string) ([]string, error) {
 func (g *GeoData) Reset() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.files, g.combos = nil, nil
+	g.files, g.siteCombos, g.ipCombos = nil, nil, nil
 }
 
 // rulePath resolves the file name of an ext: rule: a relative name is looked
 // up in Dir or the directory of def.
 func (g *GeoData) rulePath(file, def string) string {
 	def = strings.TrimSpace(def)
+	join, dir, abs := filepath.Join, filepath.Dir, filepath.IsAbs(file)
+	if g.FS != nil {
+		join, dir, abs = path.Join, path.Dir, false
+	}
 	switch {
-	case filepath.IsAbs(file):
+	case abs:
 		return file
 	case g.Dir != "":
-		return filepath.Join(g.Dir, file)
+		return join(g.Dir, file)
 	case def != "":
-		return filepath.Join(filepath.Dir(def), file)
+		return join(dir(def), file)
 	default:
 		return file
 	}
@@ -167,38 +185,38 @@ func cmpOr(values ...string) string {
 	return ""
 }
 
-// load returns the entry for code of the file at path, decoded as kind, and
+// load returns the entry for code of the file name, decoded as kind, and
 // reports whether it is a geoip entry.
-func (g *GeoData) load(path, code string, kind int) (geo GeoIP, domains []Domain, isIP bool, err error) {
-	path, code = strings.TrimSpace(path), strings.ToUpper(strings.TrimSpace(code))
+func (g *GeoData) load(name, code string, kind int) (geo GeoIP, domains []Domain, isIP bool, err error) {
+	name, code = strings.TrimSpace(name), upperASCII(strings.TrimSpace(code))
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	f, handle, err := g.openLocked(path)
+	f, handle, err := g.openLocked(name)
 	if err != nil {
 		return GeoIP{}, nil, false, err
 	}
 	defer func() { _ = handle.Close() }()
-	rec, err := f.read(handle, path, code)
+	rec, err := f.read(handle, name, code)
 	if err != nil {
 		return GeoIP{}, nil, false, err
 	}
-	if isIP, err = resolveKind(path, code, recordKind(rec), kind); err != nil {
+	if isIP, err = resolveKind(name, code, recordKind(rec), kind); err != nil {
 		return GeoIP{}, nil, false, err
 	}
-	geo, domains, err = decodeRecord(path, code, rec, isIP)
+	geo, domains, err = decodeRecord(name, code, rec, isIP)
 	return geo, domains, isIP, err
 }
 
 // read returns the raw record of code, read from handle, which was checked
 // against, or produced, the index, so that a file replaced meanwhile cannot
 // mix them up.
-func (f *datFile) read(handle *os.File, path, code string) ([]byte, error) {
+func (f *datFile) read(handle geoFile, name, code string) ([]byte, error) {
 	if code == "" {
 		return nil, errors.New("geomatch: empty geodata code")
 	}
 	sp, ok := f.index[code]
 	if !ok {
-		return nil, fmt.Errorf("%w: %s in %s", ErrCodeNotFound, code, path)
+		return nil, fmt.Errorf("%w: %s in %s", ErrCodeNotFound, code, name)
 	}
 	rec := make([]byte, sp.n)
 	if _, err := handle.ReadAt(rec, sp.off); err != nil {
@@ -216,12 +234,12 @@ type recKind struct {
 // resolveKind decides how to read a record of kind k for a rule of kind:
 // as a geoip entry or a geosite one, or not at all if the rule names the
 // other kind.
-func resolveKind(path, code string, k recKind, kind int) (isIP bool, err error) {
+func resolveKind(name, code string, k recKind, kind int) (isIP bool, err error) {
 	switch {
 	case kind == kindIP && k.certain && !k.isIP:
-		return false, fmt.Errorf("geomatch: %s in %s is a geosite entry", code, path)
+		return false, fmt.Errorf("geomatch: %s in %s is a geosite entry", code, name)
 	case kind == kindSite && k.certain && k.isIP:
-		return false, fmt.Errorf("geomatch: %s in %s is a geoip entry", code, path)
+		return false, fmt.Errorf("geomatch: %s in %s is a geoip entry", code, name)
 	case kind == kindAny:
 		return k.isIP, nil
 	default:
@@ -229,37 +247,70 @@ func resolveKind(path, code string, k recKind, kind int) (isIP bool, err error) 
 	}
 }
 
-func decodeRecord(path, code string, rec []byte, isIP bool) (geo GeoIP, domains []Domain, err error) {
+func decodeRecord(name, code string, rec []byte, isIP bool) (geo GeoIP, domains []Domain, err error) {
 	if isIP {
 		geo, err = decodeGeoIP(rec)
 	} else {
 		domains, err = decodeGeoSite(rec)
 	}
 	if err != nil {
-		return GeoIP{}, nil, fmt.Errorf("%w: %s in %s", err, code, path)
+		return GeoIP{}, nil, fmt.Errorf("%w: %s in %s", err, code, name)
 	}
 	return geo, domains, nil
 }
 
-// compiled returns code of the file at path compiled for rules, as kind,
+// compiledRule returns the compiled geo entry of a RuleGeoIP, RuleGeoSite or
+// RuleExt rule, from the cache when another rule used it.
+func (g *GeoData) compiledRule(r Rule) (*geoIPSet, *domainSet, error) {
+	switch r.Kind {
+	case RuleGeoIP:
+		name := g.IPFile
+		if r.File != "" {
+			name = g.rulePath(r.File, g.IPFile)
+		}
+		return g.compiled(name, r.Code, nil, kindIP)
+	case RuleGeoSite:
+		name := g.SiteFile
+		if r.File != "" {
+			name = g.rulePath(r.File, g.SiteFile)
+		}
+		return g.compiled(name, r.Code, r.Attrs, kindSite)
+	case RuleExt:
+		geo, site, err := g.compiled(g.rulePath(r.File, cmpOr(g.SiteFile, g.IPFile)), r.Code, r.Attrs, kindAny)
+		switch {
+		case err != nil:
+			return nil, nil, err
+		case geo != nil && len(r.Attrs) > 0:
+			return nil, nil, errors.New("attributes on a geoip entry")
+		case site != nil && r.Negate:
+			return nil, nil, errors.New("! on a geosite entry")
+		}
+		return geo, site, nil
+	case RuleIP, RuleFull, RuleDomain, RuleSubdomain, RuleKeyword, RuleRegexp, RuleDotless:
+		return nil, nil, fmt.Errorf("geomatch: %v reads no geodata", r)
+	default:
+		return nil, nil, fmt.Errorf("geomatch: unknown rule kind %d", r.Kind)
+	}
+}
+
+// compiled returns code of the file name compiled for rules, as kind,
 // from the cache when another rule used it: a geoip entry, or a geosite
-// entry restricted to the domains having every attribute in attrs. The
-// code PRIVATE of a geoip file falls back to the built-in ranges.
-func (g *GeoData) compiled(path, code string, attrs []string, kind int) (*geoIPSet, *domainSet, error) {
-	path, code = strings.TrimSpace(path), strings.ToUpper(strings.TrimSpace(code))
-	slices.Sort(attrs)
+// entry restricted to the domains having every attribute in attrs, which are
+// sorted. The code PRIVATE of a geoip file falls back to the built-in ranges.
+func (g *GeoData) compiled(name, code string, attrs []string, kind int) (*geoIPSet, *domainSet, error) {
+	name, code = strings.TrimSpace(name), upperASCII(strings.TrimSpace(code))
 	key := strings.Join(append([]string{code}, attrs...), "@")
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	geo, site, err := g.compiledLocked(path, code, key, attrs, kind)
+	geo, site, err := g.compiledLocked(name, code, key, attrs, kind)
 	if err != nil && kind == kindIP && code == "PRIVATE" {
 		return builtinPrivate(), nil, nil
 	}
 	return geo, site, err
 }
 
-func (g *GeoData) compiledLocked(path, code, key string, attrs []string, kind int) (*geoIPSet, *domainSet, error) {
-	f, handle, err := g.openLocked(path)
+func (g *GeoData) compiledLocked(name, code, key string, attrs []string, kind int) (*geoIPSet, *domainSet, error) {
+	f, handle, err := g.openLocked(name)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -267,7 +318,7 @@ func (g *GeoData) compiledLocked(path, code, key string, attrs []string, kind in
 	k, known := f.kinds[code]
 	var rec []byte
 	if !known {
-		if rec, err = f.read(handle, path, code); err != nil {
+		if rec, err = f.read(handle, name, code); err != nil {
 			return nil, nil, err
 		}
 		k = recordKind(rec)
@@ -276,7 +327,7 @@ func (g *GeoData) compiledLocked(path, code, key string, attrs []string, kind in
 		}
 		f.kinds[code] = k
 	}
-	isIP, err := resolveKind(path, code, k, kind)
+	isIP, err := resolveKind(name, code, k, kind)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -287,11 +338,11 @@ func (g *GeoData) compiledLocked(path, code, key string, attrs []string, kind in
 		return nil, s, nil
 	}
 	if rec == nil {
-		if rec, err = f.read(handle, path, code); err != nil {
+		if rec, err = f.read(handle, name, code); err != nil {
 			return nil, nil, err
 		}
 	}
-	geo, domains, err := decodeRecord(path, code, rec, isIP)
+	geo, domains, err := decodeRecord(name, code, rec, isIP)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -321,78 +372,123 @@ func (g *GeoData) compiledLocked(path, code, key string, attrs []string, kind in
 // each combination, so that a Matcher with several geosite entries looks a
 // host up once and Matchers with the same entries share the result.
 func (g *GeoData) mergedSites(sets []*domainSet) *domainSet {
-	key := comboKey("site", sets)
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if d, ok := g.combos[key].(*domainSet); ok {
-		return d
-	}
-	d := mergeDomainSets(sets)
-	g.storeComboLocked(key, d)
-	return d
+	return merged(g, &g.siteCombos, sets, mergeDomainSets)
 }
 
 // mergedIPs is mergedSites for geoip entries.
 func (g *GeoData) mergedIPs(sets []*ipSet) *ipSet {
-	key := comboKey("ip", sets)
+	return merged(g, &g.ipCombos, sets, mergeIPSets)
+}
+
+// merged returns merge(sets) from cache, building it once for each
+// combination of sets regardless of their order. The cache holds it weakly:
+// it goes when no Matcher uses it any more, so combinations that policies
+// stop using do not accumulate.
+func merged[T any](g *GeoData, cache *map[string]weak.Pointer[T], sets []*T, merge func([]*T) *T) *T {
+	key := comboKey(sets)
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if s, ok := g.combos[key].(*ipSet); ok {
+	if s := (*cache)[key].Value(); s != nil {
 		return s
 	}
-	s := mergeIPSets(sets)
-	g.storeComboLocked(key, s)
+	s := merge(sets)
+	if *cache == nil {
+		*cache = make(map[string]weak.Pointer[T])
+	}
+	wp := weak.Make(s)
+	(*cache)[key] = wp
+	runtime.AddCleanup(s, func(key string) {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		if (*cache)[key] == wp {
+			delete(*cache, key)
+		}
+	}, key)
 	return s
 }
 
-func (g *GeoData) storeComboLocked(key string, set any) {
-	if g.combos == nil {
-		g.combos = make(map[string]any)
-	}
-	g.combos[key] = set
-}
-
 // comboKey identifies a combination of compiled entries regardless of order.
-func comboKey[T any](kind string, sets []*T) string {
+func comboKey[T any](sets []*T) string {
 	parts := make([]string, len(sets))
 	for i, s := range sets {
 		parts[i] = fmt.Sprintf("%p", s)
 	}
 	slices.Sort(parts)
-	return kind + ":" + strings.Join(parts, ",")
+	return strings.Join(parts, ",")
 }
 
-// openLocked opens path and returns its index, which it builds from the open
+// geoFile is an open geodata file.
+type geoFile interface {
+	io.ReaderAt
+	io.Closer
+}
+
+// openLocked opens name and returns its index, which it builds from the open
 // handle on first use and whenever the file is no longer the one indexed.
 // The caller closes the handle.
-func (g *GeoData) openLocked(path string) (*datFile, *os.File, error) {
-	if path == "" {
+func (g *GeoData) openLocked(name string) (*datFile, geoFile, error) {
+	if name == "" {
 		return nil, nil, ErrNoGeoData
 	}
-	handle, err := os.Open(path)
+	var file fs.File
+	var err error
+	if g.FS != nil {
+		file, err = g.FS.Open(path.Clean(filepath.ToSlash(name)))
+	} else {
+		file, err = os.Open(name)
+	}
 	if err != nil {
 		return nil, nil, err
 	}
-	fi, err := handle.Stat()
+	fi, err := file.Stat()
 	if err != nil {
-		_ = handle.Close()
+		_ = file.Close()
 		return nil, nil, err
 	}
-	if f, ok := g.files[path]; ok && os.SameFile(f.info, fi) && f.info.Size() == fi.Size() && f.info.ModTime().Equal(fi.ModTime()) {
-		return f, handle, nil
+	handle, readAt := file.(geoFile)
+	if f, ok := g.files[name]; ok && sameVersion(f.info, fi) {
+		if readAt {
+			return f, handle, nil
+		}
+		_ = file.Close()
+		return f, nopCloser{bytes.NewReader(f.data)}, nil
 	}
-	index, err := indexDat(handle, fi.Size())
+	// A file without ReadAt is read into memory and kept with its index.
+	size, data := fi.Size(), []byte(nil)
+	if !readAt {
+		data, err = io.ReadAll(file)
+		_ = file.Close()
+		if err != nil {
+			return nil, nil, err
+		}
+		size, handle = int64(len(data)), nopCloser{bytes.NewReader(data)}
+	}
+	index, err := indexDat(handle, size)
 	if err != nil {
 		_ = handle.Close()
-		return nil, nil, fmt.Errorf("%w: %s", err, path)
+		return nil, nil, fmt.Errorf("%w: %s", err, name)
 	}
-	f := &datFile{info: fi, index: index}
+	f := &datFile{info: fi, index: index, data: data}
 	if g.files == nil {
 		g.files = make(map[string]*datFile)
 	}
-	g.files[path] = f
-	g.combos = nil // they may hold entries of the previous version
+	g.files[name] = f
+	// Merged entries may hold entries of the previous version.
+	g.siteCombos, g.ipCombos = nil, nil
 	return f, handle, nil
+}
+
+type nopCloser struct{ *bytes.Reader }
+
+func (nopCloser) Close() error { return nil }
+
+// sameVersion reports whether two stats describe the same version of a
+// file: the same size and time and, for stats of the operating system,
+// including those of an os.DirFS, the same file, so that one renamed over it
+// counts as new. os.SameFile reports a stat it cannot compare as different
+// even from itself.
+func sameVersion(a, b fs.FileInfo) bool {
+	return a.Size() == b.Size() && a.ModTime().Equal(b.ModTime()) && (!os.SameFile(a, a) || os.SameFile(a, b))
 }
 
 // indexDat indexes a GeoIPList or GeoSiteList: a sequence of field 1
@@ -436,7 +532,7 @@ func indexDat(r io.ReaderAt, size int64) (map[string]span, error) {
 			if err != nil {
 				return nil, err
 			}
-			if key := strings.ToUpper(code); key != "" {
+			if key := upperASCII(code); key != "" {
 				if _, dup := index[key]; !dup {
 					index[key] = span{body, int64(length)}
 				}
@@ -557,7 +653,7 @@ func decodeDomain(msg []byte) (Domain, bool) {
 			value = r.bytes()
 		case num == 3 && typ == wireBytes:
 			if key, ok := fieldBytes(r.bytes(), 1); ok && len(key) > 0 {
-				d.Attrs = append(d.Attrs, strings.ToLower(string(key)))
+				d.Attrs = append(d.Attrs, lowerASCII(string(key)))
 			}
 		default:
 			r.skip(typ)
