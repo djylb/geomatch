@@ -6,19 +6,13 @@ import (
 	"strings"
 )
 
-// Suffix flags of domainSet.suffix.
-const (
-	suffixSelf = 1 << iota // the domain itself
-	suffixSub              // its subdomains
-)
-
 // domainSet matches normalized host names: lowercase, without a trailing dot.
 // After finish, keywords and the literals that regular expressions require
 // are found in one pass over the host, and only the regular expressions whose
 // literal occurs run.
 type domainSet struct {
-	full       map[string]struct{}
-	suffix     map[string]uint8
+	names      map[string]uint8 // full: and suffix rules until finish
+	table      *domainTable     // names after finish
 	keywords   []string
 	regexps    []*regexp.Regexp
 	lits       []string // the literal each regexp requires, or ""
@@ -28,20 +22,15 @@ type domainSet struct {
 	index    *literalIndex // keywords, then the literals of litOwner
 	litOwner []int         // the regexp of each literal after the keywords
 	free     []int         // regexps without a literal
+	active   bool          // some rule was added
 }
 
-func (d *domainSet) addFull(host string) {
-	if d.full == nil {
-		d.full = make(map[string]struct{})
+// addName adds a full: or suffix rule with nameExact and nameSub flags.
+func (d *domainSet) addName(name string, flags uint8) {
+	if d.names == nil {
+		d.names = make(map[string]uint8)
 	}
-	d.full[host] = struct{}{}
-}
-
-func (d *domainSet) addSuffix(domain string, flags uint8) {
-	if d.suffix == nil {
-		d.suffix = make(map[string]uint8)
-	}
-	d.suffix[domain] |= flags
+	d.names[name] |= flags
 }
 
 func (d *domainSet) addKeyword(keyword string) {
@@ -58,8 +47,13 @@ func (d *domainSet) addRegexp(pattern string) error {
 	return nil
 }
 
-// finish builds the literal index once every rule is added.
+// finish builds the name table and the literal index once every rule is
+// added.
 func (d *domainSet) finish() {
+	if d.names != nil {
+		d.table = newDomainTable(d.names)
+		d.names = nil
+	}
 	lits := slices.Clone(d.keywords)
 	d.litOwner, d.free = nil, nil
 	for i, lit := range d.lits {
@@ -74,30 +68,16 @@ func (d *domainSet) finish() {
 	if len(lits) > 0 {
 		d.index = newLiteralIndex(lits)
 	}
+	d.active = d.table != nil || d.index != nil || len(d.free) > 0 || d.dotlessAny || len(d.dotless) > 0
 }
 
 // match reports whether host, which must be normalized, matches.
 func (d *domainSet) match(host string) bool {
-	if host == "" {
+	if !d.active || host == "" {
 		return false
 	}
-	if _, ok := d.full[host]; ok {
+	if d.table != nil && d.table.match(host) {
 		return true
-	}
-	if len(d.suffix) > 0 {
-		if d.suffix[host]&suffixSelf != 0 {
-			return true
-		}
-		for rest := host; ; {
-			i := strings.IndexByte(rest, '.')
-			if i < 0 {
-				break
-			}
-			rest = rest[i+1:]
-			if d.suffix[rest]&suffixSub != 0 {
-				return true
-			}
-		}
 	}
 	if d.index != nil {
 		// Under case folding a non-ASCII host can match a regexp without
@@ -152,9 +132,9 @@ func (d *domainSet) addDomains(domains []Domain) {
 	for _, dom := range domains {
 		switch dom.Type {
 		case DomainFull:
-			d.addFull(dom.Value)
+			d.addName(dom.Value, nameExact)
 		case DomainRoot:
-			d.addSuffix(dom.Value, suffixSelf|suffixSub)
+			d.addName(dom.Value, nameExact|nameSub)
 		case DomainKeyword:
 			d.addKeyword(dom.Value)
 		case DomainRegexp:
@@ -162,4 +142,26 @@ func (d *domainSet) addDomains(domains []Domain) {
 			_ = d.addRegexp(dom.Value)
 		}
 	}
+}
+
+// mergeDomainSets returns a set holding the rules of finished sets, which
+// share their compiled regular expressions with it.
+func mergeDomainSets(sets []*domainSet) *domainSet {
+	m := &domainSet{}
+	for _, s := range sets {
+		if t := s.table; t != nil {
+			start := uint32(0)
+			for i, end := range t.ends {
+				m.addName(string(t.data[start:end]), t.flags[i])
+				start = end
+			}
+		}
+		m.keywords = append(m.keywords, s.keywords...)
+		m.regexps = append(m.regexps, s.regexps...)
+		m.lits = append(m.lits, s.lits...)
+		m.dotless = append(m.dotless, s.dotless...)
+		m.dotlessAny = m.dotlessAny || s.dotlessAny
+	}
+	m.finish()
+	return m
 }

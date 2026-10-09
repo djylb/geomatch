@@ -156,3 +156,13 @@ func (s *ipSet) contains(a netip.Addr) bool {
 func (s *ipSet) ranges() int {
 	return len(s.v4) + len(s.v6)
 }
+
+// mergeIPSets returns a set holding the addresses of sets.
+func mergeIPSets(sets []*ipSet) *ipSet {
+	var b ipSetBuilder
+	for _, s := range sets {
+		b.v4 = append(b.v4, s.v4...)
+		b.v6 = append(b.v6, s.v6...)
+	}
+	return b.build()
+}

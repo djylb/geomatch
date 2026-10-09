@@ -36,7 +36,7 @@ func FuzzDecodeGeoData(f *testing.F) {
 			rec := data[sp.off : sp.off+sp.n]
 			_, _ = decodeGeoIP(rec)
 			_, _ = decodeGeoSite(rec)
-			_ = isGeoIPRecord(rec)
+			_ = recordKind(rec)
 		}
 	})
 }

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -36,9 +37,9 @@ type Options struct {
 // Matcher matches IP addresses and domain names against compiled rules. It
 // is immutable and safe for concurrent use. A nil *Matcher matches nothing.
 type Matcher struct {
-	ips      ipSet
-	inverse  []*ipSet // geoip:!code and reverse_match entries
-	domains  domainSet
+	ipSets   []*ipSet     // address rules, then geoip entries shared through GeoData
+	inverse  []*ipSet     // geoip:!code and reverse_match entries
+	domSets  []*domainSet // domain rules, then geosite entries shared through GeoData
 	ipRules  int
 	domRules int
 }
@@ -75,11 +76,19 @@ func Compile(rules []string, opts Options) (*Matcher, error) {
 			errs = append(errs, &RuleError{Rule: rule, Err: err})
 		}
 	}
-	c.domains.finish()
-	m := &Matcher{domains: c.domains, ipRules: c.ipRules, domRules: c.domRules}
-	m.ips = *c.ips.build()
-	for i := range c.inverse {
-		m.inverse = append(m.inverse, c.inverse[i].build())
+	// Several geo entries become one set, so that a query looks once.
+	if len(c.geoIPs) > 1 {
+		c.geoIPs = []*ipSet{c.geo.mergedIPs(c.geoIPs)}
+	}
+	if len(c.sites) > 1 {
+		c.sites = []*domainSet{c.geo.mergedSites(c.sites)}
+	}
+	m := &Matcher{ipSets: c.geoIPs, inverse: c.inverse, domSets: c.sites, ipRules: c.ipRules, domRules: c.domRules}
+	if own := c.ips.build(); own.ranges() > 0 {
+		m.ipSets = append([]*ipSet{own}, m.ipSets...)
+	}
+	if c.domains.finish(); c.domains.active {
+		m.domSets = append([]*domainSet{&c.domains}, m.domSets...)
 	}
 	return m, errors.Join(errs...)
 }
@@ -96,9 +105,17 @@ func MustCompile(rules []string, opts Options) *Matcher {
 // Match reports whether addr matches: its host, as HostOf extracts it, is
 // matched as an IP address or else as a domain name.
 func (m *Matcher) Match(addr string) bool {
-	host := HostOf(addr)
-	if ip, ok := parseIP(host); ok {
-		return m.MatchIP(ip)
+	host, numeric := addr, false
+	if plain, num := hostClass(addr); plain {
+		numeric = num
+	} else {
+		host = HostOf(addr)
+		numeric = strings.IndexByte(host, ':') >= 0 || strings.Trim(host, "0123456789.") == ""
+	}
+	if numeric {
+		if ip, err := netip.ParseAddr(host); err == nil {
+			return m.MatchIP(ip)
+		}
 	}
 	return m.matchDomain(host)
 }
@@ -127,8 +144,10 @@ func (m *Matcher) MatchIP(ip netip.Addr) bool {
 		return false
 	}
 	ip = ip.Unmap().WithZone("")
-	if m.ips.contains(ip) {
-		return true
+	for _, s := range m.ipSets {
+		if s.contains(ip) {
+			return true
+		}
 	}
 	for _, s := range m.inverse {
 		if !s.contains(ip) {
@@ -141,15 +160,25 @@ func (m *Matcher) MatchIP(ip netip.Addr) bool {
 // MatchDomain reports whether host, a domain name or host:port, matches a
 // domain rule. IP addresses match no domain rule.
 func (m *Matcher) MatchDomain(host string) bool {
-	host = HostOf(host)
-	if _, ok := parseIP(host); ok {
-		return false
+	if plain, numeric := hostClass(host); !plain || numeric {
+		host = HostOf(host)
+		if _, ok := parseIP(host); ok {
+			return false
+		}
 	}
 	return m.matchDomain(host)
 }
 
 func (m *Matcher) matchDomain(host string) bool {
-	return m != nil && m.domains.match(host)
+	if m == nil || host == "" {
+		return false
+	}
+	for _, s := range m.domSets {
+		if s.match(host) {
+			return true
+		}
+	}
+	return false
 }
 
 // Len returns the number of rules compiled into m.
@@ -170,8 +199,10 @@ func (m *Matcher) HasDomainRules() bool { return m != nil && m.domRules > 0 }
 type compiler struct {
 	geo      *GeoData
 	ips      ipSetBuilder
-	inverse  []ipSetBuilder
+	geoIPs   []*ipSet
+	inverse  []*ipSet
 	domains  domainSet
+	sites    []*domainSet
 	ipRules  int
 	domRules int
 }
@@ -180,7 +211,7 @@ func (c *compiler) add(rule string) error {
 	if kind, value, ok := strings.Cut(rule, ":"); ok {
 		switch strings.ToLower(kind) {
 		case "geoip":
-			return c.addGeoIP("", value)
+			return c.addGeoIP(c.geo.IPFile, value)
 		case "ext-ip":
 			file, code, err := splitExt(value)
 			if err != nil {
@@ -188,7 +219,7 @@ func (c *compiler) add(rule string) error {
 			}
 			return c.addGeoIP(c.geo.rulePath(file, c.geo.IPFile), code)
 		case "geosite":
-			return c.addGeoSite("", value)
+			return c.addGeoSite(c.geo.SiteFile, value)
 		case "ext-domain":
 			file, code, err := splitExt(value)
 			if err != nil {
@@ -225,15 +256,15 @@ func (c *compiler) addPlain(rule string) error {
 		return nil
 	}
 	if suffix, ok := strings.CutPrefix(rule, "*"); ok {
-		flags := uint8(suffixSelf | suffixSub)
+		flags := uint8(nameExact | nameSub)
 		if s, ok := strings.CutPrefix(suffix, "."); ok {
-			suffix, flags = s, suffixSub
+			suffix, flags = s, nameSub
 		}
 		host, err := domainValue(suffix)
 		if err != nil {
 			return err
 		}
-		c.domains.addSuffix(host, flags)
+		c.domains.addName(host, flags)
 		c.domRules++
 		return nil
 	}
@@ -289,17 +320,18 @@ func (c *compiler) addDomainRule(kind, value string) error {
 			return err
 		}
 		if kind == "full" {
-			c.domains.addFull(host)
+			c.domains.addName(host, nameExact)
 		} else {
-			c.domains.addSuffix(host, suffixSelf|suffixSub)
+			c.domains.addName(host, nameExact|nameSub)
 		}
 	}
 	c.domRules++
 	return nil
 }
 
-// addGeoIP adds code, or the addresses outside it for !code.
-func (c *compiler) addGeoIP(file, code string) error {
+// addGeoIP adds code of the geoip file at path, or the addresses outside it
+// for !code.
+func (c *compiler) addGeoIP(path, code string) error {
 	code = strings.TrimSpace(code)
 	negate := strings.HasPrefix(code, "!")
 	if negate {
@@ -308,39 +340,44 @@ func (c *compiler) addGeoIP(file, code string) error {
 	if code == "" {
 		return errEmptyValue
 	}
-	geo, err := c.geo.LoadIP(file, code)
+	geo, _, err := c.geo.compiled(path, code, nil, kindIP)
 	if err != nil {
 		return err
 	}
-	c.addGeoIPEntry(geo, negate)
+	c.addGeoIPSet(geo, negate)
 	return nil
 }
 
-func (c *compiler) addGeoIPEntry(geo GeoIP, negate bool) {
-	b := &c.ips
-	if negate != geo.Inverse {
-		c.inverse = append(c.inverse, ipSetBuilder{})
-		b = &c.inverse[len(c.inverse)-1]
+func (c *compiler) addGeoIPSet(geo *geoIPSet, negate bool) {
+	list := &c.geoIPs
+	if negate != geo.inverse {
+		list = &c.inverse
 	}
-	for _, p := range geo.Prefixes {
-		b.addPrefix(p)
+	if !slices.Contains(*list, geo.set) {
+		*list = append(*list, geo.set)
 	}
 	c.ipRules++
 }
 
-// addGeoSite adds code, optionally followed by @attributes that every entry
-// added must have.
-func (c *compiler) addGeoSite(file, value string) error {
+func (c *compiler) addSiteSet(site *domainSet) {
+	if !slices.Contains(c.sites, site) {
+		c.sites = append(c.sites, site)
+	}
+	c.domRules++
+}
+
+// addGeoSite adds code of the geosite file at path, optionally followed by
+// @attributes that every entry added must have.
+func (c *compiler) addGeoSite(path, value string) error {
 	code, attrs, err := splitAttrs(value)
 	if err != nil {
 		return err
 	}
-	domains, err := c.geo.LoadSite(file, code)
+	_, site, err := c.geo.compiled(path, code, attrs, kindSite)
 	if err != nil {
 		return err
 	}
-	c.domains.addDomains(filterAttrs(domains, attrs))
-	c.domRules++
+	c.addSiteSet(site)
 	return nil
 }
 
@@ -359,20 +396,19 @@ func (c *compiler) addExt(value string) error {
 		return err
 	}
 	path := c.geo.rulePath(file, cmpOr(c.geo.SiteFile, c.geo.IPFile))
-	geo, domains, isIP, err := c.geo.load(path, code, kindAny)
+	geo, site, err := c.geo.compiled(path, code, attrs, kindAny)
 	switch {
 	case err != nil:
 		return err
-	case isIP:
+	case geo != nil:
 		if len(attrs) > 0 {
 			return errors.New("attributes on a geoip entry")
 		}
-		c.addGeoIPEntry(geo, negate)
+		c.addGeoIPSet(geo, negate)
 	case negate:
 		return errors.New("! on a geosite entry")
 	default:
-		c.domains.addDomains(filterAttrs(domains, attrs))
-		c.domRules++
+		c.addSiteSet(site)
 	}
 	return nil
 }

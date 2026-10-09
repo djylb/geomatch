@@ -117,15 +117,17 @@ func (x *literalIndex) scan(text string, hit func(id int32) bool) bool {
 }
 
 // requiredLiteral returns an ASCII text, lowercase, that every match of the
-// regular expression pattern contains, or "" if it finds none of at least
-// three bytes. It looks at the top-level sequence of the expression only.
+// regular expression pattern contains, or "" if it finds none usable as a
+// prefilter: two bytes of specific text, or three of a top-level domain such
+// as .com, which many hosts contain and is preferred least. It looks at the
+// top-level sequence of the expression only.
 func requiredLiteral(pattern string) string {
 	re, err := syntax.Parse(pattern, syntax.Perl)
 	if err != nil {
 		return ""
 	}
 	lit := longestRequired(re.Simplify())
-	if len(lit) < 3 {
+	if !usableLiteral(lit) {
 		return ""
 	}
 	for i := range len(lit) {
@@ -149,11 +151,40 @@ func longestRequired(re *syntax.Regexp) string {
 	case syntax.OpConcat:
 		best := ""
 		for _, sub := range re.Sub {
-			if s := longestRequired(sub); len(s) > len(best) {
+			if s := longestRequired(sub); betterLiteral(s, best) {
 				best = s
 			}
 		}
 		return best
 	}
 	return ""
+}
+
+// betterLiteral reports whether a is a better prefilter than b: usable over
+// unusable, specific text over a top-level domain, then the longer.
+func betterLiteral(a, b string) bool {
+	if ua, ub := usableLiteral(a), usableLiteral(b); ua != ub {
+		return ua
+	}
+	if ta, tb := isTLD(a), isTLD(b); ta != tb {
+		return tb
+	}
+	return len(a) > len(b)
+}
+
+func usableLiteral(lit string) bool {
+	return len(lit) >= 3 || len(lit) == 2 && !isTLD(lit)
+}
+
+// isTLD reports whether lit looks like a top-level domain: a dot and letters.
+func isTLD(lit string) bool {
+	if len(lit) < 2 || lit[0] != '.' {
+		return false
+	}
+	for i := 1; i < len(lit); i++ {
+		if c := lit[i] | 0x20; c < 'a' || c > 'z' {
+			return false
+		}
+	}
+	return true
 }

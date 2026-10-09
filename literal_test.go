@@ -41,6 +41,8 @@ func TestLiteralIndexAgainstContains(t *testing.T) {
 
 func TestRequiredLiteral(t *testing.T) {
 	for pattern, want := range map[string]string{
+		`(^|\.)uu[a-z][1-9][0-9]?\.com$`:       "uu",
+		`(^|\.)[a-z][1-9][0-9][a-z]\.com$`:     ".com",
 		`(^|\.)13mei[5-7]\.buzz$`:              "13mei",
 		`^[0-9]+vod-adaptive\.akamaized\.net$`: "vod-adaptive.akamaized.net",
 		`^ad(s)?\.Example\.COM$`:               ".example.com",

@@ -9,6 +9,8 @@ for access control and traffic routing in Go.
   of lowercase hosts do not allocate.
 - Geodata files are indexed on first use, so a rule reads only its own entry
   of a file of tens of megabytes, and files changed on disk are picked up.
+- Matchers compiled with one `GeoData` share each compiled `geoip:` and
+  `geosite:` entry, so many policies that use `geosite:cn` hold it once.
 
 ## Install
 
@@ -96,22 +98,3 @@ Notes on the rules:
 - `dotless:` takes plain text, not a regular expression fragment.
 - `geoip:private` works without a geoip file.
 - `ext:` accepts either kind of file; `ext-ip:` and `ext-domain:` name the kind.
-
-## Performance
-
-Medians on an Apple M5 Pro (`go test -bench .`, with geoip.dat and
-geosite.dat files named by `GEOMATCH_GEOIP` and `GEOMATCH_GEOSITE`):
-
-| Query                                                | Time   |
-|------------------------------------------------------|--------|
-| `MatchIP` against 10,000 prefixes                    | 25 ns  |
-| `MatchIP` against `geoip:cn`                         | 21 ns  |
-| `MatchDomain` missing 50,000 `domain:` rules         | 138 ns |
-| `MatchDomain` missing `geosite:cn` (119,000 domains) | 131 ns |
-| `Match("www.example.com:443")`, parsing included     | 61 ns  |
-
-Addresses are kept as merged ranges searched in binary, domains as a map per
-label of the host, and keywords together with the literal text that each
-regular expression requires in one Aho-Corasick automaton, so only the
-regular expressions whose text occurs in the host run. Compiling `geoip:cn`
-and `geosite:cn` from the files takes about 15–20 ms.

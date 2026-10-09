@@ -7,6 +7,9 @@ import "strings"
 // host is lowercased, without brackets, IPv6 zone or trailing dot. It
 // returns "" if there is no host.
 func HostOf(addr string) string {
+	if plain, _ := hostClass(addr); plain {
+		return addr
+	}
 	s := strings.TrimSpace(addr)
 	// A scheme ends before the first /, ? or #; a :// later on belongs to
 	// a path or query, such as a redirect target.
@@ -37,4 +40,24 @@ func HostOf(addr string) string {
 		s = s[:i] // zone
 	}
 	return strings.ToLower(strings.TrimSuffix(s, "."))
+}
+
+// hostClass scans s once. plain reports whether s is already a normalized
+// host name or IPv4 address, the common case, which HostOf returns unchanged;
+// numeric whether it holds only digits and dots, so may be an IPv4 address.
+func hostClass(s string) (plain, numeric bool) {
+	if s == "" || s[len(s)-1] == '.' {
+		return false, false
+	}
+	numeric = true
+	for i := range len(s) {
+		switch c := s[i]; {
+		case c >= '0' && c <= '9', c == '.':
+		case c >= 'a' && c <= 'z', c == '-', c == '_':
+			numeric = false
+		default:
+			return false, false
+		}
+	}
+	return true, numeric
 }

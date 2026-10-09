@@ -2,6 +2,7 @@ package geomatch
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -161,5 +162,89 @@ func TestLiteralIndexLinearOutputs(t *testing.T) {
 	x.scan(strings.Repeat("a", 3), func(int32) bool { hits++; return false })
 	if hits != 6 { // a three times, aa twice, aaa once
 		t.Fatalf("%d hits, want 6", hits)
+	}
+}
+
+// TestMatchersShareGeoEntries checks that Matchers compiled with one GeoData
+// share each compiled geo entry, and that a changed file is compiled anew.
+func TestMatchersShareGeoEntries(t *testing.T) {
+	geo := testGeoData(t)
+	rules := []string{"geosite:cn", "geosite:CN", "geoip:cn", "geoip:private", "domain:own.test"}
+	a := MustCompile(rules, Options{GeoData: geo})
+	b := MustCompile(rules, Options{GeoData: geo})
+	// The domain rule is the Matcher's own; geosite:cn appears once, and
+	// geoip:cn and geoip:private are merged into one shared set.
+	if len(a.domSets) != 2 || len(a.ipSets) != 1 || a.domSets[1] != b.domSets[1] || a.ipSets[0] != b.ipSets[0] || a.domSets[0] == b.domSets[0] {
+		t.Fatalf("entries not shared: %d domain sets, %d IP sets", len(a.domSets), len(a.ipSets))
+	}
+	if !a.Match("qq.com") || !a.Match("1.2.3.4") || !a.Match("10.0.0.1") || !a.Match("own.test") || a.Match("8.8.8.8") {
+		t.Fatal("shared entries do not match")
+	}
+	if attr := MustCompile([]string{"geosite:cn@api"}, Options{GeoData: geo}); attr.domSets[0] == a.domSets[1] {
+		t.Fatal("an attribute filter shares the unfiltered entry")
+	}
+
+	if err := os.WriteFile(geo.SiteFile, encodeDat(datEntry{code: "CN", domains: []Domain{{Type: DomainFull, Value: "new.cn"}}}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	later := time.Now().Add(time.Minute)
+	_ = os.Chtimes(geo.SiteFile, later, later)
+	c := MustCompile([]string{"geosite:cn"}, Options{GeoData: geo})
+	if c.domSets[0] == a.domSets[1] || !c.Match("new.cn") || c.Match("qq.com") || !a.Match("qq.com") {
+		t.Fatal("a changed file was not compiled anew, or an older Matcher changed")
+	}
+}
+
+func TestGeoEntriesMergedPerMatcher(t *testing.T) {
+	geo := testGeoData(t)
+	a := MustCompile([]string{"geosite:cn", "geosite:google", "geoip:cn", "geoip:us"}, Options{GeoData: geo})
+	b := MustCompile([]string{"geoip:us", "geoip:cn", "geosite:google", "geosite:cn"}, Options{GeoData: geo})
+	if len(a.domSets) != 1 || len(a.ipSets) != 1 || a.domSets[0] != b.domSets[0] || a.ipSets[0] != b.ipSets[0] {
+		t.Fatalf("not merged and shared: %d domain sets, %d IP sets", len(a.domSets), len(a.ipSets))
+	}
+	for addr, want := range map[string]bool{"qq.com": true, "mail.google.com": true, "1.2.3.4": true, "8.8.8.8": true, "9.9.9.9": false, "other.test": false} {
+		if got := a.Match(addr); got != want {
+			t.Errorf("Match(%q) = %v, want %v", addr, got, want)
+		}
+	}
+}
+
+func TestGeoDataPathsTrimmed(t *testing.T) {
+	geo := testGeoData(t)
+	spaced := &GeoData{IPFile: geo.IPFile + " ", SiteFile: " " + geo.SiteFile}
+	if _, err := Compile([]string{"geoip:cn", "geosite:google"}, Options{GeoData: spaced}); err != nil {
+		t.Fatalf("paths with spaces: %v", err)
+	}
+	if _, err := Compile([]string{"geoip:cn"}, Options{GeoData: &GeoData{IPFile: "  "}}); !errors.Is(err, ErrNoGeoData) {
+		t.Fatalf("blank path error = %v, want %v", err, ErrNoGeoData)
+	}
+}
+
+func TestPrivateFallbackOnBadRecord(t *testing.T) {
+	// A PRIVATE record whose CIDR is cut short.
+	rec := appendBytesField(nil, 1, []byte("PRIVATE"))
+	rec = append(rec, 0x12, 0x10, 0x0a)
+	path := filepath.Join(t.TempDir(), "geoip.dat")
+	if err := os.WriteFile(path, appendBytesField(nil, 1, rec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m, err := Compile([]string{"geoip:private"}, Options{GeoData: &GeoData{IPFile: path}})
+	if err != nil || !m.Match("10.0.0.1") {
+		t.Fatalf("geoip:private with a bad record = %v, matches 10.0.0.1 %v", err, m.Match("10.0.0.1"))
+	}
+}
+
+// TestGeoKindMismatch checks that a rule naming the wrong kind of file fails
+// and leaves the shared entries of correct rules intact.
+func TestGeoKindMismatch(t *testing.T) {
+	geo := testGeoData(t)
+	for _, rule := range []string{"ext-ip:geosite.dat:google", "ext-domain:geoip.dat:cn", "ext:geosite.dat:!google"} {
+		if _, err := Compile([]string{rule}, Options{GeoData: geo}); err == nil {
+			t.Errorf("Compile(%q) accepted the wrong kind", rule)
+		}
+	}
+	m := MustCompile([]string{"ext:geosite.dat:google", "ext:geoip.dat:cn"}, Options{GeoData: geo})
+	if !m.Match("google.com") || !m.Match("1.2.3.4") || m.Match("8.8.8.8") {
+		t.Fatal("correct ext: rules were poisoned by the wrong ones")
 	}
 }
