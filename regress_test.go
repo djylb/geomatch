@@ -12,6 +12,8 @@ import (
 
 // TestHostOfIgnoresEmbeddedScheme checks that a URL in a path or query does
 // not stand in for the host, which would let it slip past a Policy.
+//
+//goland:noinspection HttpUrlsUsage
 func TestHostOfIgnoresEmbeddedScheme(t *testing.T) {
 	for in, want := range map[string]string{
 		"blocked.com/login?next=https://allowed.com/": "blocked.com",
