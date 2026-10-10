@@ -306,3 +306,40 @@ func TestGeoDataDirFSReplaced(t *testing.T) {
 		t.Fatal("replaced file not indexed again")
 	}
 }
+
+// TestGeoSiteKeywordTrailingDot checks that a geosite keyword keeps its
+// trailing dot, as a keyword: rule does, while domains lose theirs.
+func TestGeoSiteKeywordTrailingDot(t *testing.T) {
+	dir := t.TempDir()
+	writeDat(t, dir, "geosite.dat", datEntry{code: "X", domains: []Domain{
+		{Type: DomainKeyword, Value: "Google."},
+		{Type: DomainRoot, Value: "Example.COM."},
+		{Type: DomainFull, Value: "."},
+	}})
+	geo := &GeoData{SiteFile: filepath.Join(dir, "geosite.dat")}
+	domains, err := geo.LoadSite("", "x")
+	if err != nil || len(domains) != 2 || domains[0].Value != "google." || domains[1].Value != "example.com" {
+		t.Fatalf("LoadSite() = %+v, %v", domains, err)
+	}
+	m := MustCompile([]string{"geosite:x"}, Options{GeoData: geo})
+	for host, want := range map[string]bool{"www.google.com": true, "googleapis.com": false, "a.example.com": true} {
+		if got := m.Match(host); got != want {
+			t.Errorf("Match(%q) = %v, want %v", host, got, want)
+		}
+	}
+}
+
+// TestParseRuleErrors checks that a failed parse returns the zero Rule and
+// that wildcard octets with leading zeros, which addresses reject, fail.
+func TestParseRuleErrors(t *testing.T) {
+	for _, in := range []string{"*.", "geoip:cn@x", "full:a..b", "010.*", "10.00.*", "192.168.01.*"} {
+		if r, err := ParseRule(in); err == nil || r.Kind != 0 {
+			t.Errorf("ParseRule(%q) = %+v, %v; want the zero Rule and an error", in, r, err)
+		}
+	}
+	for in, want := range map[string]string{"0.*": "0.0.0.0/8", "10.0.*": "10.0.0.0/16"} {
+		if r, err := ParseRule(in); err != nil || r.String() != want {
+			t.Errorf("ParseRule(%q) = %q, %v; want %q", in, r.String(), err, want)
+		}
+	}
+}

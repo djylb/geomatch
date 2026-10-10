@@ -81,6 +81,14 @@ func IsComment(s string) bool {
 // ParseRule parses one rule, in the syntax the package documentation lists,
 // without reading any geodata. It fails for an empty rule or a comment.
 func ParseRule(s string) (Rule, error) {
+	r, err := parseRule(s)
+	if err != nil {
+		return Rule{}, err
+	}
+	return r, nil
+}
+
+func parseRule(s string) (Rule, error) {
 	s = strings.TrimSpace(strings.ReplaceAll(s, "：", ":"))
 	if IsComment(s) {
 		return Rule{}, errNoRule
@@ -160,7 +168,7 @@ func parsePlain(s string) (Rule, error) {
 	if p, ok, err := parseIPv4Wildcard(s); ok || err != nil {
 		return Rule{Kind: RuleIP, Prefix: p}, err
 	}
-	if strings.Contains(s, "/") && !strings.Contains(s, "://") {
+	if strings.Contains(s, "/") && !strings.Contains(s, "://") && !strings.HasPrefix(s, "//") {
 		p, err := netip.ParsePrefix(s)
 		if err != nil {
 			return Rule{}, err
@@ -361,6 +369,10 @@ func parseIPv4Wildcard(s string) (netip.Prefix, bool, error) {
 			continue
 		}
 		if fixed != i {
+			return netip.Prefix{}, true, errWildcard
+		}
+		if len(part) > 1 && part[0] == '0' {
+			// Leading zeros, which netip rejects in addresses, may mean octal.
 			return netip.Prefix{}, true, errWildcard
 		}
 		v, err := strconv.ParseUint(part, 10, 8)

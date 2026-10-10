@@ -663,8 +663,15 @@ func decodeDomain(msg []byte) (Domain, bool) {
 	if r.err != nil || d.Value == "" {
 		return Domain{}, false
 	}
-	if d.Type != DomainRegexp {
+	switch d.Type {
+	case DomainRoot, DomainFull:
 		d.Value = strings.TrimSuffix(strings.ToLower(d.Value), ".")
+	case DomainKeyword:
+		// A keyword is text, whose trailing dot, as in "google.", matters.
+		d.Value = strings.ToLower(d.Value)
+	}
+	if d.Value == "" {
+		return Domain{}, false
 	}
 	return d, true
 }

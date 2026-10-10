@@ -26,6 +26,7 @@ func TestParseRule(t *testing.T) {
 		"keyword:Corp.":             "keyword:corp.",
 		"https://Example.com/path":  "keyword:example.com",
 		".Example.com":              "keyword:.example.com",
+		"//Example.com/path":        "keyword:example.com",
 		"regexp:^A+$":               "regexp:^A+$",
 		"dotless:":                  "dotless:",
 		"dotless:Intra":             "dotless:intra",
