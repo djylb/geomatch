@@ -92,6 +92,8 @@ func TestHostOf(t *testing.T) {
 		"fe80::1%eth0":                       "fe80::1",
 		"192.0.2.1:80":                       "192.0.2.1",
 		" host/path?q#f ":                    "host",
+		"//User@Example.com:80/x":            "example.com",
+		"//[::1]/x":                          "::1",
 		"[::1":                               "",
 		"":                                   "",
 	} {

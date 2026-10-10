@@ -168,7 +168,7 @@ func parsePlain(s string) (Rule, error) {
 	if p, ok, err := parseIPv4Wildcard(s); ok || err != nil {
 		return Rule{Kind: RuleIP, Prefix: p}, err
 	}
-	if strings.Contains(s, "/") && !strings.Contains(s, "://") {
+	if strings.Contains(s, "/") && !strings.Contains(s, "://") && !strings.HasPrefix(s, "//") {
 		p, err := netip.ParsePrefix(s)
 		if err != nil {
 			return Rule{}, err

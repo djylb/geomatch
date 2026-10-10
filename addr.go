@@ -3,9 +3,9 @@ package geomatch
 import "strings"
 
 // HostOf returns the host of addr, which may be a bare host or IP address,
-// host:port, [IPv6]:port, or a URL such as https://user@host:443/path. The
-// host is lowercased, without brackets, IPv6 zone or trailing dot. It
-// returns "" if there is no host.
+// host:port, [IPv6]:port, or a URL such as https://user@host:443/path or a
+// scheme-relative //host/path. The host is lowercased, without brackets,
+// IPv6 zone or trailing dot. It returns "" if there is no host.
 func HostOf(addr string) string {
 	if plain, _ := hostClass(addr); plain {
 		return addr
@@ -15,6 +15,8 @@ func HostOf(addr string) string {
 	// a path or query, such as a redirect target.
 	if i := strings.Index(s, "://"); i >= 0 && !strings.ContainsAny(s[:i], "/?#") {
 		s = s[i+3:]
+	} else if rest, ok := strings.CutPrefix(s, "//"); ok {
+		s = rest // a scheme-relative URL
 	}
 	if i := strings.IndexAny(s, "/?#"); i >= 0 {
 		s = s[:i]
