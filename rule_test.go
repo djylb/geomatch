@@ -1,6 +1,7 @@
 package geomatch
 
 import (
+	"encoding/json"
 	"errors"
 	"net/netip"
 	"reflect"
@@ -45,7 +46,7 @@ func TestParseRule(t *testing.T) {
 		}
 	}
 	for _, in := range []string{"", "  ", "# c", "; c"} {
-		if _, err := ParseRule(in); !errors.Is(err, errNoRule) || !IsComment(in) {
+		if _, err := ParseRule(in); !errors.Is(err, errNoRule) || !isComment(in) {
 			t.Errorf("ParseRule(%q) error = %v, want a comment", in, err)
 		}
 	}
@@ -70,7 +71,7 @@ func TestCompileRulesNormalizes(t *testing.T) {
 		{Kind: RuleDomain, Value: "Example.COM."},
 		{Kind: RuleIP, Prefix: netip.MustParsePrefix("10.1.2.3/8")},
 		{Kind: RuleFull, Value: "bad host"},
-	}, Options{})
+	})
 	var re *RuleError
 	if !errors.As(err, &re) || re.Index != 2 {
 		t.Fatalf("error = %v, want rule 2 rejected", err)
@@ -94,4 +95,62 @@ func FuzzParseRule(f *testing.F) {
 			t.Fatalf("round trip of %q: %+v -> %q -> %+v, %v", s, r, r.String(), back, err)
 		}
 	})
+}
+
+func TestRuleText(t *testing.T) {
+	var cfg struct {
+		Mode  Mode
+		Rules []Rule
+	}
+	in := `{"Mode":"denylist","Rules":["GEOIP:CN","*Example.com","10.1.2.3/8","regexp:^ads"]}`
+	if err := json.Unmarshal([]byte(in), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CompileRules(cfg.Rules[:1]); !errors.Is(err, ErrNoGeoData) {
+		t.Fatalf("CompileRules(geoip:cn) without geodata = %v", err)
+	}
+	m, err := CompileRules(cfg.Rules[1:])
+	if err != nil {
+		t.Fatalf("CompileRules of decoded rules: %v", err)
+	}
+	if !m.Match("www.example.com") || !m.Match("10.9.9.9") {
+		t.Fatalf("CompileRules of decoded rules = %v", m.Rules())
+	}
+	out, err := json.Marshal(cfg)
+	if want := `{"Mode":"denylist","Rules":["geoip:cn","domain:example.com","10.0.0.0/8","regexp:^ads"]}`; err != nil || string(out) != want {
+		t.Fatalf("json.Marshal = %s, %v; want %s", out, err, want)
+	}
+	if err := json.Unmarshal([]byte(`{"Rules":["full:"]}`), &cfg); !errors.Is(err, ErrInvalidRule) {
+		t.Errorf("invalid rule decoded: %v", err)
+	}
+	if _, err := json.Marshal([]Rule{{}}); err == nil {
+		t.Error("zero Rule encoded")
+	}
+}
+
+func TestLineEndingsAndBOM(t *testing.T) {
+	want := []string{"domain:a.test", "", "# c", "10.0.0.0/8", "full:", "keyword:z"}
+	for name, text := range map[string]string{
+		"unix":    "\uFEFFdomain:a.test\n\n# c\n10.0.0.0/8\nfull:\nkeyword:z",
+		"windows": "\uFEFFdomain:a.test\r\n\r\n# c\r\n10.0.0.0/8\r\nfull:\r\nkeyword:z",
+		"old mac": "\uFEFFdomain:a.test\r\r# c\r10.0.0.0/8\rfull:\rkeyword:z",
+		"mixed":   "domain:a.test\r\n\n# c\r10.0.0.0/8\nfull:\r\nkeyword:z",
+	} {
+		lines := SplitLines(text)
+		if !reflect.DeepEqual(lines, want) {
+			t.Errorf("%s: SplitLines = %q", name, lines)
+		}
+		m, err := Compile(lines)
+		var errs RuleErrors
+		if !errors.As(err, &errs) || len(errs) != 1 || errs[0].Index+1 != 5 || m.Len() != 3 || !m.Match("a.test") {
+			t.Errorf("%s: Compile = %v, %v", name, m.Rules(), err)
+		}
+	}
+	// A byte order mark is trimmed from a rule however the text was split.
+	if r, err := ParseRule("\uFEFFdomain:a.test\r"); err != nil || r.String() != "domain:a.test" {
+		t.Errorf("ParseRule with a BOM = %v, %v", r, err)
+	}
+	if !isComment("\uFEFF# c") || !isComment("\uFEFF") {
+		t.Error("comment after a BOM")
+	}
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -25,19 +26,19 @@ func TestHostOfIgnoresEmbeddedScheme(t *testing.T) {
 			t.Errorf("HostOf(%q) = %q, want %q", in, got, want)
 		}
 	}
-	p := Policy{Mode: Allowlist, Rules: MustCompile([]string{"domain:allowed.com"}, Options{})}
+	p := Policy{Allow: MustCompile([]string{"domain:allowed.com"})}
 	if p.Allows("blocked.com/?r=https://allowed.com") {
 		t.Fatal("allowlist bypassed through a URL in the query")
 	}
 }
 
 func TestRuleValuesAreNotHosts(t *testing.T) {
-	m := MustCompile([]string{"keyword:corp."}, Options{})
+	m := MustCompile([]string{"keyword:corp."})
 	if m.Match("corpus.example") || !m.Match("evilcorp.example") {
 		t.Fatal("keyword: lost its trailing dot")
 	}
 	for _, rule := range []string{"domain:user@example.com", "full:example.com:443", "domain:exa%mple.com", "*.a/b"} {
-		if _, err := Compile([]string{rule}, Options{}); err == nil {
+		if _, err := Compile([]string{rule}); err == nil {
 			t.Errorf("Compile(%q) accepted a value that is not a host", rule)
 		}
 	}
@@ -54,17 +55,17 @@ func TestGeoDataPathsAsGiven(t *testing.T) {
 		t.Fatal(err)
 	}
 	geo := &GeoData{IPFile: "conf/geoip.dat"}
-	if codes, err := geo.Codes(geo.IPFile); err != nil || len(codes) != 1 {
-		t.Fatalf("Codes(IPFile) = %v, %v", codes, err)
+	if codes, err := geo.IPCodes(""); err != nil || len(codes) != 1 {
+		t.Fatalf("IPCodes(IPFile) = %v, %v", codes, err)
 	}
 	if _, err := geo.LoadIP(geo.IPFile, "cn"); err != nil {
 		t.Fatalf("LoadIP(IPFile) error = %v", err)
 	}
 	// ext: names are relative to the default file's directory.
-	if _, err := Compile([]string{"ext:geoip.dat:cn"}, Options{GeoData: geo}); err != nil {
+	if _, err := (Compiler{GeoData: geo}).Compile([]string{"ext:geoip.dat:cn"}); err != nil {
 		t.Fatalf("ext: next to IPFile: %v", err)
 	}
-	if _, err := Compile([]string{"ext:conf/geoip.dat:cn"}, Options{}); err != nil {
+	if _, err := Compile([]string{"ext:conf/geoip.dat:cn"}); err != nil {
 		t.Fatalf("ext: without GeoData: %v", err)
 	}
 }
@@ -85,7 +86,7 @@ func TestGeoDataReplacedFile(t *testing.T) {
 	}
 	_ = os.Chtimes(path, stamp, stamp)
 	geo := &GeoData{SiteFile: path}
-	if _, err := geo.Codes(""); err != nil {
+	if _, err := geo.SiteCodes(""); err != nil {
 		t.Fatal(err)
 	}
 	tmp := filepath.Join(dir, "next.dat")
@@ -136,11 +137,11 @@ func TestIndexDatEdgeCases(t *testing.T) {
 // TestExtEmptyGeoIP checks that ext: detects a geoip entry without CIDRs.
 func TestExtEmptyGeoIP(t *testing.T) {
 	path := writeDat(t, t.TempDir(), "ip.dat", datEntry{code: "ALL", inverse: true}, datEntry{code: "NONE"})
-	all := MustCompile([]string{"ext:" + path + ":all"}, Options{})
+	all := MustCompile([]string{"ext:" + path + ":all"})
 	if !all.Match("192.0.2.1") {
 		t.Fatal("reverse_match entry without CIDRs matched nothing")
 	}
-	if m := MustCompile([]string{"ext:" + path + ":!none"}, Options{}); !m.Match("192.0.2.1") {
+	if m := MustCompile([]string{"ext:" + path + ":!none"}); !m.Match("192.0.2.1") {
 		t.Fatal("negated empty entry matched nothing")
 	}
 }
@@ -172,8 +173,8 @@ func TestLiteralIndexLinearOutputs(t *testing.T) {
 func TestMatchersShareGeoEntries(t *testing.T) {
 	geo := testGeoData(t)
 	rules := []string{"geosite:cn", "geosite:CN", "geoip:cn", "geoip:private", "domain:own.test"}
-	a := MustCompile(rules, Options{GeoData: geo})
-	b := MustCompile(rules, Options{GeoData: geo})
+	a := mustCompile(geo, rules)
+	b := mustCompile(geo, rules)
 	// The domain rule is the Matcher's own; geosite:cn appears once, and
 	// geoip:cn and geoip:private are merged into one shared set.
 	if len(a.domSets) != 2 || len(a.ipSets) != 1 || a.domSets[1] != b.domSets[1] || a.ipSets[0] != b.ipSets[0] || a.domSets[0] == b.domSets[0] {
@@ -182,7 +183,7 @@ func TestMatchersShareGeoEntries(t *testing.T) {
 	if !a.Match("qq.com") || !a.Match("1.2.3.4") || !a.Match("10.0.0.1") || !a.Match("own.test") || a.Match("8.8.8.8") {
 		t.Fatal("shared entries do not match")
 	}
-	if attr := MustCompile([]string{"geosite:cn@api"}, Options{GeoData: geo}); attr.domSets[0] == a.domSets[1] {
+	if attr := mustCompile(geo, []string{"geosite:cn@api"}); attr.domSets[0] == a.domSets[1] {
 		t.Fatal("an attribute filter shares the unfiltered entry")
 	}
 
@@ -191,7 +192,7 @@ func TestMatchersShareGeoEntries(t *testing.T) {
 	}
 	later := time.Now().Add(time.Minute)
 	_ = os.Chtimes(geo.SiteFile, later, later)
-	c := MustCompile([]string{"geosite:cn"}, Options{GeoData: geo})
+	c := mustCompile(geo, []string{"geosite:cn"})
 	if c.domSets[0] == a.domSets[1] || !c.Match("new.cn") || c.Match("qq.com") || !a.Match("qq.com") {
 		t.Fatal("a changed file was not compiled anew, or an older Matcher changed")
 	}
@@ -199,8 +200,8 @@ func TestMatchersShareGeoEntries(t *testing.T) {
 
 func TestGeoEntriesMergedPerMatcher(t *testing.T) {
 	geo := testGeoData(t)
-	a := MustCompile([]string{"geosite:cn", "geosite:google", "geoip:cn", "geoip:us"}, Options{GeoData: geo})
-	b := MustCompile([]string{"geoip:us", "geoip:cn", "geosite:google", "geosite:cn"}, Options{GeoData: geo})
+	a := mustCompile(geo, []string{"geosite:cn", "geosite:google", "geoip:cn", "geoip:us"})
+	b := mustCompile(geo, []string{"geoip:us", "geoip:cn", "geosite:google", "geosite:cn"})
 	if len(a.domSets) != 1 || len(a.ipSets) != 1 || a.domSets[0] != b.domSets[0] || a.ipSets[0] != b.ipSets[0] {
 		t.Fatalf("not merged and shared: %d domain sets, %d IP sets", len(a.domSets), len(a.ipSets))
 	}
@@ -214,10 +215,10 @@ func TestGeoEntriesMergedPerMatcher(t *testing.T) {
 func TestGeoDataPathsTrimmed(t *testing.T) {
 	geo := testGeoData(t)
 	spaced := &GeoData{IPFile: geo.IPFile + " ", SiteFile: " " + geo.SiteFile}
-	if _, err := Compile([]string{"geoip:cn", "geosite:google"}, Options{GeoData: spaced}); err != nil {
+	if _, err := (Compiler{GeoData: spaced}).Compile([]string{"geoip:cn", "geosite:google"}); err != nil {
 		t.Fatalf("paths with spaces: %v", err)
 	}
-	if _, err := Compile([]string{"geoip:cn"}, Options{GeoData: &GeoData{IPFile: "  "}}); !errors.Is(err, ErrNoGeoData) {
+	if _, err := (Compiler{GeoData: &GeoData{IPFile: "  "}}).Compile([]string{"geoip:cn"}); !errors.Is(err, ErrNoGeoData) {
 		t.Fatalf("blank path error = %v, want %v", err, ErrNoGeoData)
 	}
 }
@@ -230,7 +231,7 @@ func TestPrivateFallbackOnBadRecord(t *testing.T) {
 	if err := os.WriteFile(path, appendBytesField(nil, 1, rec), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	m, err := Compile([]string{"geoip:private"}, Options{GeoData: &GeoData{IPFile: path}})
+	m, err := Compiler{GeoData: &GeoData{IPFile: path}}.Compile([]string{"geoip:private"})
 	if err != nil {
 		t.Fatalf("geoip:private with a bad record: %v", err)
 	}
@@ -244,11 +245,11 @@ func TestPrivateFallbackOnBadRecord(t *testing.T) {
 func TestGeoKindMismatch(t *testing.T) {
 	geo := testGeoData(t)
 	for _, rule := range []string{"ext-ip:geosite.dat:google", "ext-domain:geoip.dat:cn", "ext:geosite.dat:!google"} {
-		if _, err := Compile([]string{rule}, Options{GeoData: geo}); err == nil {
+		if _, err := (Compiler{GeoData: geo}).Compile([]string{rule}); err == nil {
 			t.Errorf("Compile(%q) accepted the wrong kind", rule)
 		}
 	}
-	m := MustCompile([]string{"ext:geosite.dat:google", "ext:geoip.dat:cn"}, Options{GeoData: geo})
+	m := mustCompile(geo, []string{"ext:geosite.dat:google", "ext:geoip.dat:cn"})
 	if !m.Match("google.com") || !m.Match("1.2.3.4") || m.Match("8.8.8.8") {
 		t.Fatal("correct ext: rules were poisoned by the wrong ones")
 	}
@@ -257,7 +258,7 @@ func TestGeoKindMismatch(t *testing.T) {
 // TestLeadingDotKeyword checks that a plain rule with a leading dot matches
 // subdomains as a keyword, and not the domain itself.
 func TestLeadingDotKeyword(t *testing.T) {
-	m := MustCompile([]string{".example.com"}, Options{})
+	m := MustCompile([]string{".example.com"})
 	if !m.Match("www.example.com") || m.Match("example.com") {
 		t.Fatal(".example.com does not match subdomains only")
 	}
@@ -266,14 +267,14 @@ func TestLeadingDotKeyword(t *testing.T) {
 // TestRulesCannotChangeMatcher checks that the rules a Matcher returns do
 // not share memory with it.
 func TestRulesCannotChangeMatcher(t *testing.T) {
-	m := MustCompile([]string{"ext-domain:geosite.dat:cn@cn"}, Options{GeoData: testGeoData(t)})
+	m := mustCompile(testGeoData(t), []string{"ext-domain:geosite.dat:cn@cn"})
 	m.Rules()[0].Attrs[0] = "ads"
-	r, ok := m.MatchRule("qq.com")
+	r, ok := m.Find("qq.com")
 	r.Attrs[0] = "ads"
 	if !ok || m.Rules()[0].String() != "ext-domain:geosite.dat:cn@cn" {
 		t.Fatalf("rules changed through returned values: %v", m.Rules())
 	}
-	if r, _ := m.MatchRule("qq.com"); r.String() != "ext-domain:geosite.dat:cn@cn" {
+	if r, _ := m.Find("qq.com"); r.String() != "ext-domain:geosite.dat:cn@cn" {
 		t.Fatalf("MatchRule = %v", r)
 	}
 }
@@ -286,7 +287,7 @@ func TestGeoDataDirFSReplaced(t *testing.T) {
 		datEntry{code: "AA", cidrs: []string{"1.2.3.0/24"}},
 		datEntry{code: "BB", cidrs: []string{"5.6.7.0/24"}})
 	geo := &GeoData{FS: os.DirFS(dir), IPFile: "geoip.dat"}
-	if !MustCompile([]string{"geoip:aa"}, Options{GeoData: geo}).Match("1.2.3.4") {
+	if !mustCompile(geo, []string{"geoip:aa"}).Match("1.2.3.4") {
 		t.Fatal("geoip:aa does not match")
 	}
 	fi, err := os.Stat(name)
@@ -302,7 +303,7 @@ func TestGeoDataDirFSReplaced(t *testing.T) {
 	if err := os.Rename(next, name); err != nil {
 		t.Fatal(err)
 	}
-	if m := MustCompile([]string{"geoip:aa"}, Options{GeoData: geo}); !m.Match("5.6.7.8") || m.Match("1.2.3.4") {
+	if m := mustCompile(geo, []string{"geoip:aa"}); !m.Match("5.6.7.8") || m.Match("1.2.3.4") {
 		t.Fatal("replaced file not indexed again")
 	}
 }
@@ -321,7 +322,7 @@ func TestGeoSiteKeywordTrailingDot(t *testing.T) {
 	if err != nil || len(domains) != 2 || domains[0].Value != "google." || domains[1].Value != "example.com" {
 		t.Fatalf("LoadSite() = %+v, %v", domains, err)
 	}
-	m := MustCompile([]string{"geosite:x"}, Options{GeoData: geo})
+	m := mustCompile(geo, []string{"geosite:x"})
 	for host, want := range map[string]bool{"www.google.com": true, "googleapis.com": false, "a.example.com": true} {
 		if got := m.Match(host); got != want {
 			t.Errorf("Match(%q) = %v, want %v", host, got, want)
@@ -333,13 +334,23 @@ func TestGeoSiteKeywordTrailingDot(t *testing.T) {
 // that wildcard octets with leading zeros, which addresses reject, fail.
 func TestParseRuleErrors(t *testing.T) {
 	for _, in := range []string{"*.", "geoip:cn@x", "full:a..b", "010.*", "10.00.*", "192.168.01.*"} {
-		if r, err := ParseRule(in); err == nil || r.Kind != 0 {
-			t.Errorf("ParseRule(%q) = %+v, %v; want the zero Rule and an error", in, r, err)
+		r, err := ParseRule(in)
+		if err == nil {
+			t.Errorf("ParseRule(%q) = %+v; want an error", in, r)
+			continue
+		}
+		if !reflect.DeepEqual(r, Rule{}) {
+			t.Errorf("ParseRule(%q) = %+v with error %v; want the zero Rule", in, r, err)
 		}
 	}
 	for in, want := range map[string]string{"0.*": "0.0.0.0/8", "10.0.*": "10.0.0.0/16"} {
-		if r, err := ParseRule(in); err != nil || r.String() != want {
-			t.Errorf("ParseRule(%q) = %q, %v; want %q", in, r.String(), err, want)
+		r, err := ParseRule(in)
+		if err != nil {
+			t.Errorf("ParseRule(%q) error = %v; want %q", in, err, want)
+			continue
+		}
+		if got := r.String(); got != want {
+			t.Errorf("ParseRule(%q) = %q; want %q", in, got, want)
 		}
 	}
 }

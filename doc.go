@@ -9,7 +9,8 @@
 // regular expressions:
 //
 //	geo := &geomatch.GeoData{IPFile: "geoip.dat", SiteFile: "geosite.dat"}
-//	m, err := geomatch.Compile([]string{"geoip:cn", "geosite:cn", "10.0.0.0/8"}, geomatch.Options{GeoData: geo})
+//	c := geomatch.Compiler{GeoData: geo}
+//	m, err := c.Compile([]string{"geoip:cn", "geosite:cn", "10.0.0.0/8"})
 //	if err != nil {
 //		log.Print(err) // the rules that were skipped; m holds the others
 //	}
@@ -44,8 +45,18 @@
 // read as a colon, and lines starting with # or ; are comments. Hosts may be
 // written as URLs or host:port.
 //
-// ParseRule reads one rule into a Rule without any geodata, to validate or
-// normalize configuration, and CompileRules compiles parsed rules. A Policy
-// turns a Matcher into an allowlist or a denylist, and MatchRule and
-// Policy.Decide report the rule that matched.
+// Compile compiles rules without geodata. A Compiler reads geodata, and can
+// allow only some rule kinds, keep ext: rules to local files and limit the
+// rules, for rules that untrusted users write. ParseRule and ParseRules read
+// rules into Rule values without any geodata, to validate or normalize
+// configuration, and CompileRules compiles them. A skipped rule's error is
+// an ErrInvalidRule, a fault of the rule, or an ErrGeoData, a fault of the
+// geodata at hand. Matcher.Stale tells when geodata changed, and Live
+// compiles rules again when it does, to update geodata while running.
+//
+// A Policy allows or denies addresses by an allowlist, a denylist, or both
+// with a Priority, and Levels apply policies of several levels, such as
+// global and per-user ones. A Router maps addresses to targets by ordered
+// routes, the first that matches deciding, to route traffic. Their Decide
+// and Find methods report the rule that decided.
 package geomatch

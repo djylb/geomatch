@@ -1,156 +1,181 @@
 package geomatch
 
 import (
-	"fmt"
 	"net"
 	"net/netip"
 	"strconv"
-	"strings"
 )
 
-// Mode is how a Policy uses its rules.
-type Mode uint8
-
-// Policy modes. Their values are stable, for configuration files.
-const (
-	// Off allows everything.
-	Off Mode = iota
-	// Allowlist allows only what matches; with no rules it allows nothing.
-	Allowlist
-	// Denylist allows everything except what matches.
-	Denylist
-)
-
-//goland:noinspection GoMixedReceiverTypes
-func (m Mode) String() string {
-	switch m {
-	case Off:
-		return "off"
-	case Allowlist:
-		return "allowlist"
-	case Denylist:
-		return "denylist"
-	default:
-		return "mode " + strconv.Itoa(int(m))
-	}
-}
-
-// ParseMode parses a mode from its name, its number, or a common synonym:
-// off, none, disabled or 0; allowlist, allow, whitelist or 1; denylist,
-// deny, blocklist, blacklist or 2. Case and surrounding spaces are ignored.
-func ParseMode(s string) (Mode, error) {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "off", "none", "disabled", "0", "":
-		return Off, nil
-	case "allowlist", "allow", "whitelist", "1":
-		return Allowlist, nil
-	case "denylist", "deny", "blocklist", "blacklist", "2":
-		return Denylist, nil
-	}
-	return Off, fmt.Errorf("geomatch: unknown policy mode %q", s)
-}
-
-// MarshalText returns the name of m, for configuration files.
+// Policy allows or denies addresses by an allowlist, a denylist, or both:
 //
-//goland:noinspection GoMixedReceiverTypes
-func (m Mode) MarshalText() ([]byte, error) {
-	if m > Denylist {
-		return nil, fmt.Errorf("geomatch: unknown policy mode %d", m)
-	}
-	return []byte(m.String()), nil
+//   - With only Allow, it allows the addresses that Allow matches.
+//   - With only Deny, it allows all but those that Deny matches.
+//   - With both, an address that one matches gets that list's answer, and
+//     Priority decides for one that both match. Addresses that neither
+//     matches are denied with DenyFirst, as an allowlist with exceptions
+//     denies them, and allowed with AllowFirst, as a denylist with
+//     exceptions allows them.
+//   - With neither, as the zero Policy, it allows everything.
+//
+// A list is not set if it is nil, a nil *Matcher, or compiled from no rules,
+// as configuration without that list gives, so that compiling every list of
+// the configuration is enough. A list whose rules were all skipped, such as
+// for missing geodata, is set and matches nothing: an allowlist then allows
+// nothing rather than everything. Mode.Policy makes the Policy of
+// configuration that has a mode and rules, where an allowlist without rules
+// allows nothing.
+//
+// Like those of Matcher, its methods come in five forms, by the kind of
+// address. Allows reports whether an address is allowed, and Decide also
+// which rule decided, at more cost when a rule matches.
+type Policy struct {
+	// Allow and Deny are the lists: a *Matcher, or a *Live, whose Matcher
+	// the policy then follows as geodata changes.
+	Allow MatcherSource
+	Deny  MatcherSource
+	// Priority decides for an address that both lists match.
+	Priority Priority
 }
 
-// UnmarshalText sets m from what ParseMode reads. Like time.Time, Mode has a
-// pointer receiver here only, so that values print and marshal by name.
-//
-//goland:noinspection GoMixedReceiverTypes
-func (m *Mode) UnmarshalText(text []byte) error {
-	mode, err := ParseMode(string(text))
-	if err != nil {
-		return err
-	}
-	*m = mode
-	return nil
+// MatcherSource provides a Matcher to a Policy or a Router: a *Matcher
+// provides itself, and a *Live its current Matcher.
+type MatcherSource interface {
+	Matcher() *Matcher
 }
 
-// UnmarshalJSON sets m from a JSON string that ParseMode reads or from a
-// JSON number 0 to 2. A JSON null leaves m unchanged.
-//
-//goland:noinspection GoMixedReceiverTypes
-func (m *Mode) UnmarshalJSON(b []byte) error {
-	s := string(b)
-	if s == "null" {
+// sourceMatcher returns the Matcher of s, or nil.
+func sourceMatcher(s MatcherSource) *Matcher {
+	if s == nil {
 		return nil
 	}
-	if strings.HasPrefix(s, `"`) {
-		var err error
-		if s, err = strconv.Unquote(s); err != nil {
-			return fmt.Errorf("geomatch: policy mode %s: %w", b, err)
-		}
-	}
-	return m.UnmarshalText([]byte(s))
+	return s.Matcher()
 }
 
-// Policy allows or denies addresses by rules. The zero Policy allows
-// everything.
-type Policy struct {
-	Mode  Mode
-	Rules *Matcher
-}
-
-// Allows reports whether the policy allows addr, which Matcher.Match reads.
-// An address that cannot be read matches no rule. Unknown modes allow
-// everything, like Off.
-func (p Policy) Allows(addr string) bool {
-	switch p.Mode {
-	case Allowlist:
-		return p.Rules.Match(addr)
-	case Denylist:
-		return !p.Rules.Match(addr)
-	default:
-		return true
-	}
-}
+// Allows reports whether the policy allows addr, as Matcher.Match reads it.
+// An address that cannot be read matches no rule.
+func (p Policy) Allows(addr string) bool { return p.allows(addrTarget(addr)) }
 
 // AllowsIP reports whether the policy allows ip.
-func (p Policy) AllowsIP(ip netip.Addr) bool {
-	switch p.Mode {
-	case Allowlist:
-		return p.Rules.MatchIP(ip)
-	case Denylist:
-		return !p.Rules.MatchIP(ip)
-	default:
-		return true
-	}
-}
+func (p Policy) AllowsIP(ip netip.Addr) bool { return p.allows(ipTarget(ip)) }
+
+// AllowsDomain reports whether the policy allows host, as
+// Matcher.MatchDomain reads it.
+func (p Policy) AllowsDomain(host string) bool { return p.allows(domainTarget(host)) }
 
 // AllowsNetAddr reports whether the policy allows a, such as a connection's
-// RemoteAddr, which Matcher.MatchNetAddr reads.
-func (p Policy) AllowsNetAddr(a net.Addr) bool {
-	switch p.Mode {
-	case Allowlist:
-		return p.Rules.MatchNetAddr(a)
-	case Denylist:
-		return !p.Rules.MatchNetAddr(a)
-	default:
-		return true
-	}
+// RemoteAddr, as Matcher.MatchNetAddr reads it.
+func (p Policy) AllowsNetAddr(a net.Addr) bool { return p.allows(netAddrTarget(a)) }
+
+// AllowsHostIP reports whether the policy allows a domain name and the IP
+// address it resolved to, as Matcher.MatchHostIP reads them: a list matches
+// them if it matches either.
+func (p Policy) AllowsHostIP(host string, ip netip.Addr) bool {
+	return p.allows(hostIPTarget(host, ip))
 }
 
-// Decision is a Policy's answer for an address, with the rule that decided.
+// Decision is the answer of a Policy or Levels for an address, with
+// the rule that decided.
 type Decision struct {
 	Allowed bool
-	// Matched reports whether a rule matched; Rule is the first one.
+	// Matched reports whether a rule decided; Rule is that rule, of the
+	// allowlist if Allowed and of the denylist otherwise.
 	Matched bool
 	Rule    Rule
+	// Level is the index of the policy that decided among Levels, or -1 if
+	// none did. It is 0 for a single Policy.
+	Level int
 }
 
-// Decide is Allows that also reports the first rule addr matched, for
-// logging. Off decides without looking at the rules.
-func (p Policy) Decide(addr string) Decision {
-	if p.Mode != Allowlist && p.Mode != Denylist {
-		return Decision{Allowed: true}
+// String describes d for logs, as "denied by geoip:cn" or "allowed: no rule
+// matched"; among Levels it names the level after the first.
+func (d Decision) String() string {
+	verdict := "denied"
+	if d.Allowed {
+		verdict = "allowed"
 	}
-	rule, matched := p.Rules.MatchRule(addr)
-	return Decision{Allowed: matched == (p.Mode == Allowlist), Matched: matched, Rule: rule}
+	level := ""
+	if d.Level > 0 {
+		level = " at level " + strconv.Itoa(d.Level)
+	}
+	if !d.Matched {
+		return verdict + ": no rule matched" + level
+	}
+	return verdict + " by " + d.Rule.String() + level
+}
+
+// Decide is Allows that also reports the rule that decided, for logging.
+func (p Policy) Decide(addr string) Decision { return p.decide(addrTarget(addr)) }
+
+// DecideIP is Decide for an IP address.
+func (p Policy) DecideIP(ip netip.Addr) Decision { return p.decide(ipTarget(ip)) }
+
+// DecideDomain is Decide for a domain name.
+func (p Policy) DecideDomain(host string) Decision { return p.decide(domainTarget(host)) }
+
+// DecideNetAddr is Decide for a net.Addr.
+func (p Policy) DecideNetAddr(a net.Addr) Decision { return p.decide(netAddrTarget(a)) }
+
+// DecideHostIP is Decide for a domain name and its IP address.
+func (p Policy) DecideHostIP(host string, ip netip.Addr) Decision {
+	return p.decide(hostIPTarget(host, ip))
+}
+
+// lists returns the lists of p in the order they decide: the winning one
+// first, with the answer of each.
+func (p Policy) lists() (first, second MatcherSource, firstAllows bool) {
+	if p.Priority == AllowFirst {
+		return p.Allow, p.Deny, true
+	}
+	return p.Deny, p.Allow, false
+}
+
+// unmatched reports whether p allows addresses that neither list matches.
+func (p Policy) unmatched() bool {
+	return !isSet(p.Allow) || isSet(p.Deny) && p.Priority == AllowFirst
+}
+
+// isSet reports whether s is a list that is set.
+func isSet(s MatcherSource) bool {
+	m := sourceMatcher(s)
+	return m != nil && !m.noRules
+}
+
+// match reports whether a rule of p matches t, and if so whether p allows
+// it.
+func (p Policy) match(t target) (allowed, matched bool) {
+	first, second, firstAllows := p.lists()
+	if sourceMatcher(first).match(t) {
+		return firstAllows, true
+	}
+	if sourceMatcher(second).match(t) {
+		return !firstAllows, true
+	}
+	return false, false
+}
+
+func (p Policy) allows(t target) bool {
+	if allowed, ok := p.match(t); ok {
+		return allowed
+	}
+	return p.unmatched()
+}
+
+// find is match that also returns the rule.
+func (p Policy) find(t target) (Decision, bool) {
+	first, second, firstAllows := p.lists()
+	// One Matcher for both steps of find, even if a Live replaces it.
+	if rule, ok := sourceMatcher(first).find(t); ok {
+		return Decision{Allowed: firstAllows, Matched: true, Rule: rule}, true
+	}
+	if rule, ok := sourceMatcher(second).find(t); ok {
+		return Decision{Allowed: !firstAllows, Matched: true, Rule: rule}, true
+	}
+	return Decision{}, false
+}
+
+func (p Policy) decide(t target) Decision {
+	if d, ok := p.find(t); ok {
+		return d
+	}
+	return Decision{Allowed: p.unmatched()}
 }

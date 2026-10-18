@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io/fs"
 	"net"
+	"net/netip"
 	"runtime"
 	"testing"
 	"testing/fstest"
@@ -13,7 +14,7 @@ import (
 
 func TestMatchRuleAndDecide(t *testing.T) {
 	geo := testGeoData(t)
-	m := MustCompile([]string{"keyword:qq", "geosite:cn", "10.0.0.0/8", "geoip:!us", "regexp:^api", "*.only.test"}, Options{GeoData: geo})
+	m := mustCompile(geo, []string{"keyword:qq", "geosite:cn", "10.0.0.0/8", "geoip:!us", "regexp:^api", "*.only.test"})
 	for addr, want := range map[string]string{
 		"www.qq.com":       "keyword:qq",
 		"exact.cn":         "geosite:cn",
@@ -23,26 +24,26 @@ func TestMatchRuleAndDecide(t *testing.T) {
 		"apis.test":        "regexp:^api",
 		"x.only.test":      "*.only.test",
 	} {
-		r, ok := m.MatchRule(addr)
+		r, ok := m.Find(addr)
 		if !ok || r.String() != want {
-			t.Errorf("MatchRule(%q) = %v, %v; want %s", addr, r, ok, want)
+			t.Errorf("Find(%q) = %v, %v; want %s", addr, r, ok, want)
 		}
 	}
-	if r, ok := m.MatchRule("8.8.8.8"); ok {
-		t.Errorf("MatchRule(8.8.8.8) = %v", r)
+	if r, ok := m.Find("8.8.8.8"); ok {
+		t.Errorf("Find(8.8.8.8) = %v", r)
 	}
 	if len(m.Rules()) != 6 || m.Rules()[1].String() != "geosite:cn" {
 		t.Errorf("Rules() = %v", m.Rules())
 	}
 
-	deny := Policy{Mode: Denylist, Rules: m}
+	deny := Policy{Deny: m}
 	if d := deny.Decide("www.qq.com"); d.Allowed || !d.Matched || d.Rule.String() != "keyword:qq" {
 		t.Errorf("Denylist Decide = %+v", d)
 	}
 	if d := deny.Decide("8.8.8.8"); !d.Allowed || d.Matched {
 		t.Errorf("Denylist Decide(8.8.8.8) = %+v", d)
 	}
-	allow := Policy{Mode: Allowlist, Rules: m}
+	allow := Policy{Allow: m}
 	if d := allow.Decide("10.2.2.2"); !d.Allowed || d.Rule.String() != "10.0.0.0/8" {
 		t.Errorf("Allowlist Decide = %+v", d)
 	}
@@ -50,13 +51,13 @@ func TestMatchRuleAndDecide(t *testing.T) {
 		t.Errorf("Off Decide = %+v", d)
 	}
 	var nilMatcher *Matcher
-	if _, ok := nilMatcher.MatchRule("x"); ok || nilMatcher.Rules() != nil {
+	if _, ok := nilMatcher.Find("x"); ok || nilMatcher.Rules() != nil {
 		t.Error("nil Matcher")
 	}
 }
 
 func TestMatchNetAddr(t *testing.T) {
-	m := MustCompile([]string{"10.0.0.0/8", "domain:example.com", "dotless:", "keyword:abstract"}, Options{})
+	m := MustCompile([]string{"10.0.0.0/8", "domain:example.com", "dotless:", "keyword:abstract"})
 	for _, tt := range []struct {
 		addr net.Addr
 		want bool
@@ -77,9 +78,9 @@ func TestMatchNetAddr(t *testing.T) {
 			t.Errorf("MatchNetAddr(%v) = %v, want %v", tt.addr, got, tt.want)
 		}
 	}
-	p := Policy{Mode: Denylist, Rules: m}
+	p := Policy{Deny: m}
 	if p.AllowsNetAddr(&net.TCPAddr{IP: net.ParseIP("10.0.0.1")}) || !p.AllowsNetAddr(&net.TCPAddr{IP: net.ParseIP("192.0.2.1")}) ||
-		!(Policy{}).AllowsNetAddr(nil) || (Policy{Mode: Allowlist}).AllowsNetAddr(nil) {
+		!(Policy{}).AllowsNetAddr(nil) || ModeAllowlist.Policy(nil).AllowsNetAddr(nil) {
 		t.Error("AllowsNetAddr")
 	}
 }
@@ -91,9 +92,9 @@ func (a stringAddr) String() string { return string(a) }
 
 func TestModeText(t *testing.T) {
 	for in, want := range map[string]Mode{
-		"off": Off, "": Off, " NONE ": Off, "0": Off, "disabled": Off,
-		"allowlist": Allowlist, "Whitelist": Allowlist, "allow": Allowlist, "1": Allowlist,
-		"denylist": Denylist, "BLACKLIST": Denylist, "blocklist": Denylist, "deny": Denylist, "2": Denylist,
+		"off": ModeOff, "": ModeOff, " NONE ": ModeOff, "0": ModeOff, "disabled": ModeOff,
+		"allowlist": ModeAllowlist, "Whitelist": ModeAllowlist, "allow": ModeAllowlist, "1": ModeAllowlist,
+		"denylist": ModeDenylist, "BLACKLIST": ModeDenylist, "blocklist": ModeDenylist, "deny": ModeDenylist, "2": ModeDenylist,
 	} {
 		if got, err := ParseMode(in); err != nil || got != want {
 			t.Errorf("ParseMode(%q) = %v, %v; want %v", in, got, err, want)
@@ -103,14 +104,14 @@ func TestModeText(t *testing.T) {
 		t.Error("ParseMode accepted an unknown mode")
 	}
 	var cfg struct{ Mode Mode }
-	if err := json.Unmarshal([]byte(`{"Mode":"whitelist"}`), &cfg); err != nil || cfg.Mode != Allowlist {
+	if err := json.Unmarshal([]byte(`{"Mode":"whitelist"}`), &cfg); err != nil || cfg.Mode != ModeAllowlist {
 		t.Fatalf("json.Unmarshal = %v, %v", cfg.Mode, err)
 	}
 	if b, err := json.Marshal(cfg); err != nil || string(b) != `{"Mode":"allowlist"}` {
 		t.Fatalf("json.Marshal = %s, %v", b, err)
 	}
-	for in, want := range map[string]Mode{`2`: Denylist, `0`: Off, `"\u0064eny"`: Denylist, `null`: Allowlist} {
-		cfg.Mode = Allowlist
+	for in, want := range map[string]Mode{`2`: ModeDenylist, `0`: ModeOff, `"\u0064eny"`: ModeDenylist, `null`: ModeAllowlist} {
+		cfg.Mode = ModeAllowlist
 		if err := json.Unmarshal([]byte(`{"Mode":`+in+`}`), &cfg); err != nil || cfg.Mode != want {
 			t.Errorf("json.Unmarshal(%s) = %v, %v; want %v", in, cfg.Mode, err, want)
 		}
@@ -120,11 +121,11 @@ func TestModeText(t *testing.T) {
 			t.Errorf("json.Unmarshal(%s) accepted", in)
 		}
 	}
-	cfg.Mode = Allowlist
+	cfg.Mode = ModeAllowlist
 	if _, err := Mode(9).MarshalText(); err == nil {
 		t.Error("MarshalText accepted an unknown mode")
 	}
-	if err := cfg.Mode.UnmarshalText([]byte("x")); err == nil || cfg.Mode != Allowlist {
+	if err := cfg.Mode.UnmarshalText([]byte("x")); err == nil || cfg.Mode != ModeAllowlist {
 		t.Error("UnmarshalText of an unknown mode changed the mode")
 	}
 }
@@ -138,7 +139,7 @@ func TestGeoDataFS(t *testing.T) {
 		"geo/extra.dat":   {Data: site, ModTime: time.Unix(1, 0)},
 	}
 	geo := &GeoData{FS: mfs, IPFile: "geo/geoip.dat", SiteFile: "./geo/geosite.dat"}
-	m, err := Compile([]string{"geoip:cn", "geosite:cn", "ext:extra.dat:cn"}, Options{GeoData: geo})
+	m, err := Compiler{GeoData: geo}.Compile([]string{"geoip:cn", "geosite:cn", "ext:extra.dat:cn"})
 	if err != nil {
 		t.Fatalf("Compile from FS: %v", err)
 	}
@@ -148,7 +149,7 @@ func TestGeoDataFS(t *testing.T) {
 
 	// A changed file is read again.
 	mfs["geo/geoip.dat"] = &fstest.MapFile{Data: encodeDat(datEntry{code: "CN", cidrs: []string{"5.6.7.0/24"}}), ModTime: time.Unix(2, 0)}
-	if m := MustCompile([]string{"geoip:cn"}, Options{GeoData: geo}); !m.Match("5.6.7.8") || m.Match("1.2.3.4") {
+	if m := mustCompile(geo, []string{"geoip:cn"}); !m.Match("5.6.7.8") || m.Match("1.2.3.4") {
 		t.Fatal("changed FS file not read again")
 	}
 
@@ -156,14 +157,14 @@ func TestGeoDataFS(t *testing.T) {
 	plain := &countingFS{fs: mfs}
 	geo = &GeoData{FS: plain, SiteFile: "geo/geosite.dat"}
 	for range 3 {
-		if m := MustCompile([]string{"geosite:cn"}, Options{GeoData: geo}); !m.Match("qq.com") {
+		if m := mustCompile(geo, []string{"geosite:cn"}); !m.Match("qq.com") {
 			t.Fatal("FS without ReadAt")
 		}
 	}
 	if plain.reads != 1 {
 		t.Fatalf("file read %d times, want once", plain.reads)
 	}
-	if _, err := Compile([]string{"geoip:cn"}, Options{GeoData: &GeoData{FS: mfs, IPFile: "missing.dat"}}); !errors.Is(err, fs.ErrNotExist) {
+	if _, err := (Compiler{GeoData: &GeoData{FS: mfs, IPFile: "missing.dat"}}).Compile([]string{"geoip:cn"}); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("missing FS file error = %v", err)
 	}
 }
@@ -202,7 +203,7 @@ func (r *readOnlyFile) Read(p []byte) (int, error) {
 // dropped from the cache once no Matcher uses it.
 func TestMergedEntriesReleased(t *testing.T) {
 	geo := testGeoData(t)
-	m := MustCompile([]string{"geosite:cn", "geosite:google"}, Options{GeoData: geo})
+	m := mustCompile(geo, []string{"geosite:cn", "geosite:google"})
 	if !m.Match("google.com") {
 		t.Fatal("merged entry does not match")
 	}
@@ -223,5 +224,77 @@ func TestMergedEntriesReleased(t *testing.T) {
 	}
 	if n := count(); n != 0 {
 		t.Fatalf("%d cached combinations after the Matcher went away", n)
+	}
+}
+
+func TestQueryForms(t *testing.T) {
+	m := MustCompile([]string{"10.0.0.0/8", "keyword:10", "domain:example.com"})
+	tcp := &net.TCPAddr{IP: net.ParseIP("10.1.2.3"), Port: 443}
+	if r, ok := m.FindIP(netip.MustParseAddr("::ffff:10.0.0.1")); !ok || r.String() != "10.0.0.0/8" {
+		t.Errorf("FindIP = %v, %v", r, ok)
+	}
+	if r, ok := m.FindNetAddr(tcp); !ok || r.String() != "10.0.0.0/8" {
+		t.Errorf("FindNetAddr = %v, %v", r, ok)
+	}
+	if r, ok := m.FindDomain("www.example.com:443"); !ok || r.String() != "domain:example.com" {
+		t.Errorf("FindDomain = %v, %v", r, ok)
+	}
+	// A domain query never reads an IP address, which keyword:10 would match.
+	if r, ok := m.FindDomain("10.1.2.3"); ok {
+		t.Errorf("FindDomain(IP) = %v", r)
+	}
+	if _, ok := m.FindNetAddr(nil); ok {
+		t.Error("FindNetAddr(nil) matched")
+	}
+
+	deny := Policy{Deny: m}
+	if d := deny.DecideIP(netip.MustParseAddr("10.9.9.9")); d.Allowed || d.Rule.String() != "10.0.0.0/8" {
+		t.Errorf("DecideIP = %+v", d)
+	}
+	if d := deny.DecideNetAddr(tcp); d.Allowed || d.Rule.String() != "10.0.0.0/8" {
+		t.Errorf("DecideNetAddr = %+v", d)
+	}
+	if d := deny.DecideDomain("example.com."); d.Allowed || d.Rule.String() != "domain:example.com" {
+		t.Errorf("DecideDomain = %+v", d)
+	}
+	if !deny.AllowsDomain("10.1.2.3") || deny.AllowsDomain("a.example.com") {
+		t.Error("AllowsDomain")
+	}
+	if d := ModeAllowlist.Policy(nil).DecideIP(netip.MustParseAddr("10.0.0.1")); d.Allowed || d.Matched {
+		t.Errorf("Allowlist without a Matcher = %+v", d)
+	}
+}
+
+func TestCompileWithoutGeoData(t *testing.T) {
+	var geo *GeoData
+	m, err := Compiler{GeoData: geo}.CompileRules([]Rule{{Kind: RuleGeoIP, Code: "PRIVATE"}, {Kind: RuleGeoSite, Code: "CN"}})
+	if !errors.Is(err, ErrNoGeoData) || !m.Match("192.168.1.1") || m.Len() != 1 {
+		t.Errorf("nil GeoData CompileRules = %v, %v", m.Rules(), err)
+	}
+	if m, err := (Compiler{GeoData: geo}).Compile([]string{"geoip:private"}); err != nil || !m.Match("10.0.0.1") {
+		t.Errorf("nil GeoData Compile = %v", err)
+	}
+}
+
+func TestDecisionString(t *testing.T) {
+	ps := Levels{Policies: []Policy{
+		{Deny: MustCompile([]string{"keyword:ads"})},
+		{Allow: MustCompile([]string{"domain:example.com"})},
+	}}
+	for addr, want := range map[string]string{
+		"ads.test":        "denied by keyword:ads",
+		"www.example.com": "allowed by domain:example.com at level 1",
+		"other.test":      "denied: no rule matched at level 1",
+	} {
+		if got := ps.Decide(addr).String(); got != want {
+			t.Errorf("Decide(%q).String() = %q, want %q", addr, got, want)
+		}
+	}
+	if got := (Policy{}).Decide("x").String(); got != "allowed: no rule matched" {
+		t.Errorf("Off Decision = %q", got)
+	}
+	err := &RuleError{Index: 2, Rule: "full:", Err: errEmptyValue}
+	if got := err.Error(); got != `geomatch: rules[2] "full:": empty value` {
+		t.Errorf("RuleError = %q", got)
 	}
 }

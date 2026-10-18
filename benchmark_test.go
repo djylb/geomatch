@@ -14,7 +14,7 @@ func BenchmarkMatchIP(b *testing.B) {
 	for range 10000 {
 		rules = append(rules, fmt.Sprintf("%d.%d.%d.0/24", r.IntN(224), r.IntN(256), r.IntN(256)))
 	}
-	m := MustCompile(rules, Options{})
+	m := MustCompile(rules)
 	ip := netip.MustParseAddr("203.0.113.9")
 	b.ReportAllocs()
 	for b.Loop() {
@@ -28,7 +28,7 @@ func BenchmarkMatchDomain(b *testing.B) {
 		rules = append(rules, fmt.Sprintf("domain:site%d.example", i))
 	}
 	rules = append(rules, "keyword:tracker", "keyword:ads")
-	m := MustCompile(rules, Options{})
+	m := MustCompile(rules)
 	b.ReportAllocs()
 	for b.Loop() {
 		m.MatchDomain("a.b.cdn.unknown.test")
@@ -36,7 +36,7 @@ func BenchmarkMatchDomain(b *testing.B) {
 }
 
 func BenchmarkMatchAddr(b *testing.B) {
-	m := MustCompile([]string{"10.0.0.0/8", "domain:example.com"}, Options{})
+	m := MustCompile([]string{"10.0.0.0/8", "domain:example.com"})
 	b.ReportAllocs()
 	for b.Loop() {
 		m.Match("www.example.com:443")
@@ -53,10 +53,10 @@ func BenchmarkRealGeoData(b *testing.B) {
 	rules := []string{"geoip:cn", "geosite:cn"}
 	b.Run("compile", func(b *testing.B) {
 		for b.Loop() {
-			MustCompile(rules, Options{GeoData: &GeoData{IPFile: ip, SiteFile: site}})
+			mustCompile(&GeoData{IPFile: ip, SiteFile: site}, rules)
 		}
 	})
-	m := MustCompile(rules, Options{GeoData: &GeoData{IPFile: ip, SiteFile: site}})
+	m := mustCompile(&GeoData{IPFile: ip, SiteFile: site}, rules)
 	b.Run("ip", func(b *testing.B) {
 		addr := netip.MustParseAddr("223.5.5.5")
 		for b.Loop() {
@@ -68,4 +68,18 @@ func BenchmarkRealGeoData(b *testing.B) {
 			m.MatchDomain("www.unknown-site.com")
 		}
 	})
+}
+
+func BenchmarkRouter(b *testing.B) {
+	r := Router[string]{
+		Routes: []Route[string]{
+			{Matcher: MustCompile([]string{"keyword:ads", "keyword:tracker"}), Target: "block"},
+			{Matcher: MustCompile([]string{"domain:cn", "10.0.0.0/8"}), Target: "direct"},
+		},
+		Default: "proxy",
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		r.Route("www.example.com:443")
+	}
 }

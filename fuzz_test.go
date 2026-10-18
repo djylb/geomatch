@@ -11,11 +11,42 @@ func FuzzCompileAndMatch(f *testing.F) {
 		f.Add(s, "a.x.y:443")
 	}
 	f.Fuzz(func(t *testing.T, rule, addr string) {
-		m, _ := Compile([]string{rule}, Options{})
-		m.Match(addr)
-		m.MatchDomain(addr)
-		if ip, err := netip.ParseAddr(addr); err == nil {
-			m.MatchIP(ip)
+		m, _ := Compile([]string{rule, "keyword:zz", "10.0.0.0/8"})
+		// Find agrees with Match, which takes another path, in every form.
+		if _, ok := m.Find(addr); ok != m.Match(addr) {
+			t.Fatalf("rule %q: Find(%q) = %v, Match disagrees", rule, addr, ok)
+		}
+		if _, ok := m.FindDomain(addr); ok != m.MatchDomain(addr) {
+			t.Fatalf("rule %q: FindDomain(%q) = %v, MatchDomain disagrees", rule, addr, ok)
+		}
+		ip, _ := netip.ParseAddr(addr)
+		if _, ok := m.FindIP(ip); ok != m.MatchIP(ip) {
+			t.Fatalf("rule %q: FindIP(%v) = %v, MatchIP disagrees", rule, ip, ok)
+		}
+		if _, ok := m.FindHostIP(addr, ip); ok != m.MatchHostIP(addr, ip) || ok != (m.MatchDomain(addr) || m.MatchIP(ip)) {
+			t.Fatalf("rule %q: FindHostIP(%q, %v) = %v disagrees", rule, addr, ip, ok)
+		}
+		other := MustCompile([]string{"keyword:b", "10.1.0.0/16"})
+		var policies []Policy
+		for _, pr := range []Priority{DenyFirst, AllowFirst} {
+			policies = append(policies, Policy{Allow: m, Priority: pr}, Policy{Deny: m, Priority: pr},
+				Policy{Allow: m, Deny: other, Priority: pr}, Policy{Allow: other, Deny: m, Priority: pr})
+		}
+		for _, p := range policies {
+			if d := p.Decide(addr); d.Allowed != p.Allows(addr) {
+				t.Fatalf("rule %q: %+v Decide(%q) = %+v, Allows disagrees", rule, p, addr, d)
+			}
+		}
+		for _, first := range []bool{false, true} {
+			l := Levels{Policies: policies, FirstMatch: first, DenyUnmatched: len(rule)%2 == 0}
+			d := l.Decide(addr)
+			if d.Allowed != l.Allows(addr) || first && (d.Level == -1) == d.Matched {
+				t.Fatalf("rule %q: Levels(FirstMatch %v).Decide(%q) = %+v, Allows %v", rule, first, addr, d, l.Allows(addr))
+			}
+		}
+		r := Router[int]{Routes: []Route[int]{{Matcher: MustCompile([]string{"keyword:a"}), Target: 1}, {Matcher: m, Target: 2}}}
+		if got := r.Find(addr); got.Target != r.Route(addr) || got.Matched != (got.Index >= 0) {
+			t.Fatalf("rule %q: Router.Find(%q) = %+v, Route = %v", rule, addr, got, r.Route(addr))
 		}
 		_ = HostOf(addr)
 	})

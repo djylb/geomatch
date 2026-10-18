@@ -2,6 +2,7 @@ package geomatch
 
 import (
 	"errors"
+	"fmt"
 	"net/netip"
 	"regexp"
 	"slices"
@@ -42,9 +43,24 @@ const (
 	RuleExt
 )
 
+// String returns the name of k, the prefix of its rules: ip, geoip, full,
+// domain, subdomain, keyword, regexp, dotless, geosite or ext.
+func (k RuleKind) String() string {
+	names := [...]string{RuleIP: "ip", RuleGeoIP: "geoip", RuleFull: "full", RuleDomain: "domain",
+		RuleSubdomain: "subdomain", RuleKeyword: "keyword", RuleRegexp: "regexp", RuleDotless: "dotless",
+		RuleGeoSite: "geosite", RuleExt: "ext"}
+	if int(k) < len(names) && names[k] != "" {
+		return names[k]
+	}
+	return "kind " + strconv.Itoa(int(k))
+}
+
 // Rule is a parsed rule. ParseRule returns rules in a normal form: lowercase
 // domains, codes with upper-case ASCII letters, sorted attributes and masked
 // prefixes, so that String gives a rule one spelling however it was written.
+//
+// A Rule reads and writes itself as text, so that configuration can hold
+// []Rule, checked as it is decoded, for CompileRules.
 type Rule struct {
 	Kind RuleKind
 	// Prefix is the address range of RuleIP.
@@ -65,32 +81,37 @@ type Rule struct {
 }
 
 var (
-	errNoRule     = errors.New("empty rule or comment")
+	errNoRule     = classed("empty rule or comment", ErrInvalidRule)
 	errEmptyValue = errors.New("empty value")
 	errNotHost    = errors.New("not an IP address, CIDR or domain")
 	errWildcard   = errors.New("a wildcard must be a leading * of a domain or trailing octets of an IPv4 address")
 )
 
-// IsComment reports whether s is empty or a comment, starting with # or ;,
-// which Compile skips.
-func IsComment(s string) bool {
-	s = strings.TrimSpace(s)
+// trimRule trims spaces around a rule, and the byte order mark that text
+// saved by some editors starts with.
+func trimRule(s string) string {
+	return strings.TrimFunc(s, func(r rune) bool { return unicode.IsSpace(r) || r == '\uFEFF' })
+}
+
+// SplitLines splits text into lines for Compile or ParseRules, keeping their
+// positions, so that RuleError.Index+1 is the line number. Lines may end in
+// \n, \r\n or \r, and a byte order mark at the start is dropped; Compile
+// skips the empty lines and comments.
+func SplitLines(text string) []string {
+	text = strings.TrimPrefix(text, "\uFEFF")
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	return strings.Split(strings.ReplaceAll(text, "\r", "\n"), "\n")
+}
+
+// isComment reports whether s is empty or a comment, starting with # or ;.
+func isComment(s string) bool {
+	s = trimRule(s)
 	return s == "" || s[0] == '#' || s[0] == ';'
 }
 
-// ParseRule parses one rule, in the syntax the package documentation lists,
-// without reading any geodata. It fails for an empty rule or a comment.
-func ParseRule(s string) (Rule, error) {
-	r, err := parseRule(s)
-	if err != nil {
-		return Rule{}, err
-	}
-	return r, nil
-}
-
 func parseRule(s string) (Rule, error) {
-	s = strings.TrimSpace(strings.ReplaceAll(s, "：", ":"))
-	if IsComment(s) {
+	s = trimRule(strings.ReplaceAll(s, "：", ":"))
+	if isComment(s) {
 		return Rule{}, errNoRule
 	}
 	kind, value, ok := strings.Cut(s, ":")
@@ -143,6 +164,11 @@ func parseRule(s string) (Rule, error) {
 		pattern := strings.TrimSpace(value)
 		if pattern == "" {
 			return Rule{}, errEmptyValue
+		}
+		// Checked as written first, so that errors quote the pattern
+		// without the (?i) that matching adds.
+		if _, err := regexp.Compile(pattern); err != nil {
+			return Rule{}, err
 		}
 		if _, err := regexp.Compile("(?i)" + pattern); err != nil {
 			return Rule{}, err
@@ -212,6 +238,8 @@ func normalPrefix(p netip.Prefix) netip.Prefix {
 
 // String returns the rule in the syntax ParseRule reads, or "" for the zero
 // Rule.
+//
+//goland:noinspection GoMixedReceiverTypes
 func (r Rule) String() string {
 	code := lowerASCII(r.Code)
 	if r.Negate {
@@ -259,13 +287,40 @@ func (r Rule) String() string {
 
 // IsIP reports whether the rule matches IP addresses. RuleExt depends on its
 // file, so it counts as both kinds.
+//
+//goland:noinspection GoMixedReceiverTypes
 func (r Rule) IsIP() bool {
 	return r.Kind == RuleIP || r.Kind == RuleGeoIP || r.Kind == RuleExt
 }
 
 // IsDomain reports whether the rule matches domain names.
+//
+//goland:noinspection GoMixedReceiverTypes
 func (r Rule) IsDomain() bool {
 	return r.Kind >= RuleFull && r.Kind <= RuleExt
+}
+
+// MarshalText returns the rule as String writes it, or an error for the
+// zero Rule or an unknown kind.
+//
+//goland:noinspection GoMixedReceiverTypes
+func (r Rule) MarshalText() ([]byte, error) {
+	if r.Kind < RuleIP || r.Kind > RuleExt {
+		return nil, fmt.Errorf("geomatch: cannot write rule kind %d", r.Kind)
+	}
+	return []byte(r.String()), nil
+}
+
+// UnmarshalText sets r to the rule that ParseRule reads from text.
+//
+//goland:noinspection GoMixedReceiverTypes
+func (r *Rule) UnmarshalText(text []byte) error {
+	rule, err := ParseRule(string(text))
+	if err != nil {
+		return err
+	}
+	*r = rule
+	return nil
 }
 
 // parseCode parses a geoip code, which ! negates.
@@ -279,7 +334,20 @@ func parseCode(value string) (code string, negate bool, err error) {
 	if strings.Contains(code, "@") {
 		return "", false, errors.New("attributes on a geoip entry")
 	}
+	if err := checkName(code); err != nil {
+		return "", false, err
+	}
 	return code, negate, nil
+}
+
+// checkName checks a geodata code or attribute, which holds no colon,
+// spaces or control characters: a rule with them could not be written back
+// as the same rule.
+func checkName(s string) error {
+	if strings.Contains(s, ":") || hasSpace(s) {
+		return fmt.Errorf("invalid geodata code or attribute %q", s)
+	}
+	return nil
 }
 
 // splitExt splits file:code at the last colon, since a code has none and a
@@ -305,8 +373,15 @@ func splitAttrs(value string) (code string, attrs []string, err error) {
 	if code == "" {
 		return "", nil, errEmptyValue
 	}
+	if err := checkName(code); err != nil {
+		return "", nil, err
+	}
 	for _, a := range parts[1:] {
-		if a = lowerASCII(strings.TrimSpace(a)); a != "" && !slices.Contains(attrs, a) {
+		a = lowerASCII(strings.TrimSpace(a))
+		if err := checkName(a); err != nil {
+			return "", nil, err
+		}
+		if a != "" && !slices.Contains(attrs, a) {
 			attrs = append(attrs, a)
 		}
 	}

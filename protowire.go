@@ -2,12 +2,11 @@ package geomatch
 
 import (
 	"encoding/binary"
-	"errors"
 	"math"
 )
 
 // errProto reports a malformed protobuf message in a geodata file.
-var errProto = errors.New("geomatch: malformed geodata record")
+var errProto = classed("geomatch: malformed geodata record", ErrGeoData)
 
 // Protobuf wire types used by the geodata formats.
 const (
@@ -98,25 +97,6 @@ func fieldBytes(msg []byte, num uint64) ([]byte, bool) {
 		}
 		r.skip(typ)
 	}
-}
-
-// appendVarint and the helpers below encode messages for tests and tools.
-func appendVarint(b []byte, v uint64) []byte {
-	return binary.AppendUvarint(b, v)
-}
-
-func appendTag(b []byte, num uint64, typ int) []byte {
-	return appendVarint(b, num<<3|uint64(typ))
-}
-
-func appendBytesField(b []byte, num uint64, v []byte) []byte {
-	b = appendTag(b, num, wireBytes)
-	b = appendVarint(b, uint64(len(v)))
-	return append(b, v...)
-}
-
-func appendVarintField(b []byte, num uint64, v uint64) []byte {
-	return appendVarint(appendTag(b, num, wireVarint), v)
 }
 
 // maxRecord bounds the size of one geodata record read into memory.
