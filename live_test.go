@@ -159,6 +159,10 @@ func TestLiveConcurrent(t *testing.T) {
 				m := l.Matcher()
 				Policy{Allow: m}.Decide("qq.com")
 				m.Match("1.2.3.4")
+				// Block briefly so that the updates run where goroutines are
+				// not preempted and file I/O waits for the event loop, as on
+				// js/wasm.
+				time.Sleep(10 * time.Microsecond)
 			}
 		})
 	}
