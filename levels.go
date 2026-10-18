@@ -19,14 +19,11 @@ import (
 //
 // A level that is not set, the zero Policy, never matches and allows
 // everything, so it changes nothing either way. Decision.Level tells which
-// level decided. The methods take the forms of those of Policy, and read the
+// level decided, and Decision.Name its Policy.Name. The methods take the forms of those of Policy, and read the
 // address once. Levels are safe for concurrent use while their fields are
 // not changed.
 type Levels struct {
 	Policies []Policy
-	// Names, if set, name the levels, as "global" or "user 7", for
-	// Decision.LevelName and its String.
-	Names []string
 	// FirstMatch lets the first level whose rules match decide, rather than
 	// requiring every level to allow.
 	FirstMatch bool
@@ -115,8 +112,5 @@ func (l Levels) decide(t target) Decision {
 // at returns d as the decision of level i.
 func (l Levels) at(d Decision, i int) Decision {
 	d.Level = i
-	if i < len(l.Names) {
-		d.LevelName = l.Names[i]
-	}
 	return d
 }

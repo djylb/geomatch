@@ -293,12 +293,19 @@ func TestDecisionString(t *testing.T) {
 	if got := (Policy{}).Decide("x").String(); got != "allowed: no rule matched" {
 		t.Errorf("Off Decision = %q", got)
 	}
-	ps.Names = []string{"global", "user 7"}
-	if got := ps.Decide("other.test"); got.LevelName != "user 7" || got.String() != "denied: no rule matched (user 7)" {
+	ps.Policies[0].Name, ps.Policies[1].Name = "global", "user 7"
+	if got := ps.Decide("other.test"); got.Name != "user 7" || got.String() != "denied: no rule matched (user 7)" {
 		t.Errorf("named level = %+v, %q", got, got)
 	}
 	if got := ps.Decide("ads.test").String(); got != "denied by keyword:ads (global)" {
 		t.Errorf("named first level = %q", got)
+	}
+	named := Policy{Name: "tunnel 3", Deny: MustCompile([]string{"10.0.0.0/8"})}
+	if got := named.Decide("10.1.1.1").String(); got != "denied by 10.0.0.0/8 (tunnel 3)" {
+		t.Errorf("named Policy = %q", got)
+	}
+	if got := named.Decide("192.0.2.1").String(); got != "allowed: no rule matched (tunnel 3)" {
+		t.Errorf("named Policy without a match = %q", got)
 	}
 	err := &RuleError{Index: 2, Rule: "full:", Err: errEmptyValue}
 	if got := err.Error(); got != `geomatch: rule "full:": empty value` {

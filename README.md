@@ -143,14 +143,12 @@ per-client and per-resource ones, in one of two ways:
   that no level's rules match are allowed, or denied with `DenyUnmatched`.
 
 A level that is not set, the zero `Policy`, changes nothing either way.
-`Decision.Level` tells which level decided, and with `Names` so do
-`Decision.LevelName` and the `Decision`'s text:
+`Decision.Level` tells which level decided, and a `Policy` with a `Name`
+names itself in its `Decision` and the `Decision`'s text:
 
 ```go
-levels := geomatch.Levels{
-	Policies: []geomatch.Policy{global, user, client, tunnel},
-	Names:    []string{"global", "user 7", "client 12", "tunnel 3"},
-}
+user := geomatch.Policy{Name: "user 7", Deny: userRules}
+levels := geomatch.Levels{Policies: []geomatch.Policy{global, user, client, tunnel}}
 if d := levels.DecideNetAddr(conn.RemoteAddr()); !d.Allowed {
 	log.Printf("%v %v", conn.RemoteAddr(), d) // "192.0.2.7:51234 denied by geoip:cn (user 7)"
 }

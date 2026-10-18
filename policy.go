@@ -29,6 +29,9 @@ import (
 // address. Allows reports whether an address is allowed, and Decide also
 // which rule decided, at more cost when a rule matches.
 type Policy struct {
+	// Name, if set, names the policy, as "global" or "user 7", in its
+	// Decisions and their text, such as for the levels of Levels.
+	Name string
 	// Allow and Deny are the lists: a *Matcher, or a *Live, whose Matcher
 	// the policy then follows as geodata changes.
 	Allow MatcherSource
@@ -84,13 +87,13 @@ type Decision struct {
 	// Level is the index of the policy that decided among Levels, or -1 if
 	// none did. It is 0 for a single Policy.
 	Level int
-	// LevelName is the name of that level, from Levels.Names, or "".
-	LevelName string
+	// Name is the Name of the policy that decided, or "".
+	Name string
 }
 
 // String describes d for logs, as "denied by geoip:cn (user)" or "allowed:
-// no rule matched"; it names the level by LevelName, or else by number
-// after the first.
+// no rule matched"; it names the policy by Name, or else among Levels by
+// number after the first.
 func (d Decision) String() string {
 	verdict := "denied"
 	if d.Allowed {
@@ -98,8 +101,8 @@ func (d Decision) String() string {
 	}
 	level := ""
 	switch {
-	case d.LevelName != "":
-		level = " (" + d.LevelName + ")"
+	case d.Name != "":
+		level = " (" + d.Name + ")"
 	case d.Level > 0:
 		level = " (level " + strconv.Itoa(d.Level) + ")"
 	}
@@ -171,10 +174,10 @@ func (p Policy) find(t target) (Decision, bool) {
 	first, second, firstAllows := p.lists()
 	// One Matcher for both steps of find, even if a Live replaces it.
 	if rule, ok := sourceMatcher(first).find(t); ok {
-		return Decision{Allowed: firstAllows, Matched: true, Rule: rule}, true
+		return Decision{Allowed: firstAllows, Matched: true, Rule: rule, Name: p.Name}, true
 	}
 	if rule, ok := sourceMatcher(second).find(t); ok {
-		return Decision{Allowed: !firstAllows, Matched: true, Rule: rule}, true
+		return Decision{Allowed: !firstAllows, Matched: true, Rule: rule, Name: p.Name}, true
 	}
 	return Decision{}, false
 }
@@ -183,5 +186,5 @@ func (p Policy) decide(t target) Decision {
 	if d, ok := p.find(t); ok {
 		return d
 	}
-	return Decision{Allowed: p.unmatched()}
+	return Decision{Allowed: p.unmatched(), Name: p.Name}
 }
