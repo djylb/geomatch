@@ -7,6 +7,7 @@ import (
 
 type builder struct {
 	geo      *GeoData
+	view     view // the files of the GeoData, read once
 	ips      ipSetBuilder
 	geoIPs   []*ipSet
 	inverse  []*ipSet
@@ -23,7 +24,7 @@ func newBuilder(geo *GeoData) *builder {
 	if geo == nil {
 		geo = &GeoData{}
 	}
-	return &builder{geo: geo}
+	return &builder{geo: geo, view: geo.view()}
 }
 
 func (c *builder) finish() *Matcher {
@@ -42,6 +43,7 @@ func (c *builder) finish() *Matcher {
 		domRules: c.domRules,
 		probes:   c.probes,
 		geo:      c.geo,
+		cfgGen:   c.view.cfgGen,
 		sources:  c.sources,
 		noRules:  c.given == 0,
 	}
@@ -62,7 +64,7 @@ func (c *builder) add(r Rule) error {
 		c.ips.addPrefix(r.Prefix)
 		c.ipRules++
 	case RuleGeoIP, RuleGeoSite, RuleExt:
-		geo, site, src, err := c.geo.compiledRule(r)
+		geo, site, src, err := c.geo.compiledRule(c.view, r)
 		c.addSource(src)
 		if err != nil {
 			return withClass(err, ErrGeoData)

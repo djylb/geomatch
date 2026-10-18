@@ -138,7 +138,7 @@ func TestGeoDataFS(t *testing.T) {
 		"geo/geosite.dat": {Data: site, ModTime: time.Unix(1, 0)},
 		"geo/extra.dat":   {Data: site, ModTime: time.Unix(1, 0)},
 	}
-	geo := &GeoData{FS: mfs, IPFile: "geo/geoip.dat", SiteFile: "./geo/geosite.dat"}
+	geo := NewGeoData(GeoFiles{FS: mfs, IP: "geo/geoip.dat", Site: "./geo/geosite.dat"})
 	m, err := Compiler{GeoData: geo}.Compile([]string{"geoip:cn", "geosite:cn", "ext:extra.dat:cn"})
 	if err != nil {
 		t.Fatalf("Compile from FS: %v", err)
@@ -155,7 +155,7 @@ func TestGeoDataFS(t *testing.T) {
 
 	// Files without ReadAt are read whole, once per version.
 	plain := &countingFS{fs: mfs}
-	geo = &GeoData{FS: plain, SiteFile: "geo/geosite.dat"}
+	geo = NewGeoData(GeoFiles{FS: plain, Site: "geo/geosite.dat"})
 	for range 3 {
 		if m := mustCompile(geo, []string{"geosite:cn"}); !m.Match("qq.com") {
 			t.Fatal("FS without ReadAt")
@@ -164,7 +164,7 @@ func TestGeoDataFS(t *testing.T) {
 	if plain.reads != 1 {
 		t.Fatalf("file read %d times, want once", plain.reads)
 	}
-	if _, err := (Compiler{GeoData: &GeoData{FS: mfs, IPFile: "missing.dat"}}).Compile([]string{"geoip:cn"}); !errors.Is(err, fs.ErrNotExist) {
+	if _, err := (Compiler{GeoData: NewGeoData(GeoFiles{FS: mfs, IP: "missing.dat"})}).Compile([]string{"geoip:cn"}); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("missing FS file error = %v", err)
 	}
 }
@@ -283,8 +283,8 @@ func TestDecisionString(t *testing.T) {
 	}}
 	for addr, want := range map[string]string{
 		"ads.test":        "denied by keyword:ads",
-		"www.example.com": "allowed by domain:example.com at level 1",
-		"other.test":      "denied: no rule matched at level 1",
+		"www.example.com": "allowed by domain:example.com (level 1)",
+		"other.test":      "denied: no rule matched (level 1)",
 	} {
 		if got := ps.Decide(addr).String(); got != want {
 			t.Errorf("Decide(%q).String() = %q, want %q", addr, got, want)
@@ -293,8 +293,18 @@ func TestDecisionString(t *testing.T) {
 	if got := (Policy{}).Decide("x").String(); got != "allowed: no rule matched" {
 		t.Errorf("Off Decision = %q", got)
 	}
+	ps.Names = []string{"global", "user 7"}
+	if got := ps.Decide("other.test"); got.LevelName != "user 7" || got.String() != "denied: no rule matched (user 7)" {
+		t.Errorf("named level = %+v, %q", got, got)
+	}
+	if got := ps.Decide("ads.test").String(); got != "denied by keyword:ads (global)" {
+		t.Errorf("named first level = %q", got)
+	}
 	err := &RuleError{Index: 2, Rule: "full:", Err: errEmptyValue}
-	if got := err.Error(); got != `geomatch: rules[2] "full:": empty value` {
+	if got := err.Error(); got != `geomatch: rule "full:": empty value` {
 		t.Errorf("RuleError = %q", got)
+	}
+	if got := (RuleErrors{err, {Index: 5, Rule: "x:", Err: errEmptyValue}}).Error(); got != "geomatch: rules[2] \"full:\": empty value\ngeomatch: rules[5] \"x:\": empty value" {
+		t.Errorf("RuleErrors = %q", got)
 	}
 }

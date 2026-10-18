@@ -29,6 +29,7 @@ type Matcher struct {
 	once   sync.Once // compiles the regular expressions of probes
 
 	geo     *GeoData
+	cfgGen  uint64   // of the files of geo it was compiled from, for Stale
 	sources []source // the geodata files read, for Stale
 
 	noRules bool // compiled from no rules at all, for a Policy list not set
@@ -83,14 +84,18 @@ func (m *Matcher) FindHostIP(host string, ip netip.Addr) (Rule, bool) {
 }
 
 // Stale reports whether a geodata file that m was compiled from has changed
-// since, or appeared after it could not be read, so that compiling the rules
-// again would give a different Matcher. It checks the files' metadata only.
+// since, or appeared after it did not exist, or GeoData.SetFiles replaced
+// the files, so that compiling the rules again would give a different
+// Matcher. It checks the files' metadata only.
 func (m *Matcher) Stale() bool {
-	if m == nil {
+	if m == nil || m.geo == nil {
 		return false
 	}
+	if m.geo.view().cfgGen != m.cfgGen {
+		return true
+	}
 	for _, s := range m.sources {
-		if m.geo.changed(s) {
+		if s.changed() {
 			return true
 		}
 	}

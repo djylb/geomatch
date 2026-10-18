@@ -109,14 +109,16 @@ func isComment(s string) bool {
 	return s == "" || s[0] == '#' || s[0] == ';'
 }
 
-func parseRule(s string) (Rule, error) {
+// parseRule parses s, reading a domain without a kind as a rule of kind
+// plain: RuleKeyword, RuleDomain or RuleFull.
+func parseRule(s string, plain RuleKind) (Rule, error) {
 	s = trimRule(strings.ReplaceAll(s, "：", ":"))
 	if isComment(s) {
 		return Rule{}, errNoRule
 	}
 	kind, value, ok := strings.Cut(s, ":")
 	if !ok {
-		return parsePlain(s)
+		return parsePlain(s, plain)
 	}
 	switch strings.ToLower(kind) {
 	case "geoip":
@@ -185,12 +187,43 @@ func parseRule(s string) (Rule, error) {
 		text, err := keywordValue(value)
 		return Rule{Kind: RuleDotless, Value: text}, err
 	}
-	return parsePlain(s)
+	// A word before a single colon is a misspelt kind, such as ful:x.com,
+	// unless a port or a scheme-relative URL follows it, as in host:443.
+	if strings.Count(s, ":") == 1 && isKindName(kind) && !isPort(value) && !strings.HasPrefix(value, "//") {
+		return Rule{}, fmt.Errorf("unknown rule kind %q", kind)
+	}
+	return parsePlain(s, plain)
+}
+
+// isKindName reports whether s could be the kind of a rule: letters, digits,
+// - and _, with a letter.
+func isKindName(s string) bool {
+	letter := false
+	for i := range len(s) {
+		switch c := s[i] | 0x20; {
+		case c >= 'a' && c <= 'z':
+			letter = true
+		case s[i] >= '0' && s[i] <= '9', s[i] == '-', s[i] == '_':
+		default:
+			return false
+		}
+	}
+	return letter
+}
+
+// isPort reports whether s starts with a port number, as after host: in
+// host:port or host:port/path.
+func isPort(s string) bool {
+	if i := strings.IndexAny(s, "/?#"); i >= 0 {
+		s = s[:i]
+	}
+	return s != "" && strings.Trim(s, "0123456789") == ""
 }
 
 // parsePlain parses a rule without a kind: an IP address, a CIDR, an IPv4
-// wildcard, a *-prefixed domain or a plain domain, which matches as a keyword.
-func parsePlain(s string) (Rule, error) {
+// wildcard, a *-prefixed domain or a plain domain, which is a rule of kind
+// plain.
+func parsePlain(s string, plain RuleKind) (Rule, error) {
 	if p, ok, err := parseIPv4Wildcard(s); ok || err != nil {
 		return Rule{Kind: RuleIP, Prefix: p}, err
 	}
@@ -212,19 +245,32 @@ func parsePlain(s string) (Rule, error) {
 	if strings.Contains(s, "*") {
 		return Rule{}, errWildcard
 	}
+	if from, to, ok := strings.Cut(s, "-"); ok {
+		if _, err := netip.ParseAddr(strings.TrimSpace(from)); err == nil {
+			if _, err := netip.ParseAddr(strings.TrimSpace(to)); err == nil {
+				return Rule{}, errors.New("IP ranges are not supported; write CIDR prefixes")
+			}
+		}
+	}
 	host := HostOf(s)
 	if ip, err := netip.ParseAddr(host); err == nil {
 		ip = ip.Unmap().WithZone("")
 		return Rule{Kind: RuleIP, Prefix: netip.PrefixFrom(ip, ip.BitLen())}, nil
 	}
-	// A leading dot, as in ".example.com", is kept: the keyword then
-	// matches subdomains and not the domain itself.
-	dot := ""
-	if rest, ok := strings.CutPrefix(host, "."); ok {
-		dot, host = ".", rest
+	// A leading dot, as in ".example.com", means the subdomains: a keyword
+	// keeps it, so that it does not match the domain itself.
+	rest, dotted := strings.CutPrefix(host, ".")
+	host, err := domainValue(rest)
+	switch {
+	case plain == RuleKeyword && dotted:
+		return Rule{Kind: RuleKeyword, Value: "." + host}, err
+	case plain == RuleKeyword:
+		return Rule{Kind: RuleKeyword, Value: host}, err
+	case dotted:
+		return Rule{Kind: RuleSubdomain, Value: host}, err
+	default:
+		return Rule{Kind: plain, Value: host}, err
 	}
-	host, err := domainValue(host)
-	return Rule{Kind: RuleKeyword, Value: dot + host}, err
 }
 
 // normalPrefix masks p and writes an IPv4-mapped prefix as IPv4.

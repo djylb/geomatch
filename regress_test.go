@@ -54,19 +54,25 @@ func TestGeoDataPathsAsGiven(t *testing.T) {
 	if err := os.WriteFile(filepath.Join("conf", "geoip.dat"), encodeDat(datEntry{code: "CN", cidrs: []string{"1.2.3.0/24"}}), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	geo := &GeoData{IPFile: "conf/geoip.dat"}
+	geo := NewGeoData(GeoFiles{IP: "conf/geoip.dat"})
 	if codes, err := geo.IPCodes(""); err != nil || len(codes) != 1 {
 		t.Fatalf("IPCodes(IPFile) = %v, %v", codes, err)
 	}
-	if _, err := geo.LoadIP(geo.IPFile, "cn"); err != nil {
+	if _, err := geo.LoadIP(geo.Files().IP, "cn"); err != nil {
 		t.Fatalf("LoadIP(IPFile) error = %v", err)
 	}
 	// ext: names are relative to the default file's directory.
 	if _, err := (Compiler{GeoData: geo}).Compile([]string{"ext:geoip.dat:cn"}); err != nil {
 		t.Fatalf("ext: next to IPFile: %v", err)
 	}
-	if _, err := Compile([]string{"ext:conf/geoip.dat:cn"}); err != nil {
-		t.Fatalf("ext: without GeoData: %v", err)
+	// Never relative to the working directory, which depends on how the
+	// program was started; absolute names still work.
+	if _, err := Compile([]string{"ext:conf/geoip.dat:cn"}); !errors.Is(err, ErrNoGeoData) {
+		t.Fatalf("relative ext: without GeoData: %v", err)
+	}
+	abs, _ := filepath.Abs("conf/geoip.dat")
+	if _, err := Compile([]string{"ext:" + abs + ":cn"}); err != nil {
+		t.Fatalf("absolute ext: without GeoData: %v", err)
 	}
 }
 
@@ -85,7 +91,7 @@ func TestGeoDataReplacedFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = os.Chtimes(path, stamp, stamp)
-	geo := &GeoData{SiteFile: path}
+	geo := NewGeoData(GeoFiles{Site: path})
 	if _, err := geo.SiteCodes(""); err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +135,7 @@ func TestIndexDatEdgeCases(t *testing.T) {
 	if err := os.WriteFile(path, file, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if d, err := (&GeoData{SiteFile: path}).LoadSite("", "dup"); err != nil || d[0].Value != "first.test" {
+	if d, err := (NewGeoData(GeoFiles{Site: path})).LoadSite("", "dup"); err != nil || d[0].Value != "first.test" {
 		t.Fatalf("duplicate code = %v, %v; want the first entry", d, err)
 	}
 }
@@ -187,11 +193,11 @@ func TestMatchersShareGeoEntries(t *testing.T) {
 		t.Fatal("an attribute filter shares the unfiltered entry")
 	}
 
-	if err := os.WriteFile(geo.SiteFile, encodeDat(datEntry{code: "CN", domains: []Domain{{Type: DomainFull, Value: "new.cn"}}}), 0o600); err != nil {
+	if err := os.WriteFile(geo.Files().Site, encodeDat(datEntry{code: "CN", domains: []Domain{{Type: DomainFull, Value: "new.cn"}}}), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	later := time.Now().Add(time.Minute)
-	_ = os.Chtimes(geo.SiteFile, later, later)
+	_ = os.Chtimes(geo.Files().Site, later, later)
 	c := mustCompile(geo, []string{"geosite:cn"})
 	if c.domSets[0] == a.domSets[1] || !c.Match("new.cn") || c.Match("qq.com") || !a.Match("qq.com") {
 		t.Fatal("a changed file was not compiled anew, or an older Matcher changed")
@@ -214,11 +220,11 @@ func TestGeoEntriesMergedPerMatcher(t *testing.T) {
 
 func TestGeoDataPathsTrimmed(t *testing.T) {
 	geo := testGeoData(t)
-	spaced := &GeoData{IPFile: geo.IPFile + " ", SiteFile: " " + geo.SiteFile}
+	spaced := NewGeoData(GeoFiles{IP: geo.Files().IP + " ", Site: " " + geo.Files().Site})
 	if _, err := (Compiler{GeoData: spaced}).Compile([]string{"geoip:cn", "geosite:google"}); err != nil {
 		t.Fatalf("paths with spaces: %v", err)
 	}
-	if _, err := (Compiler{GeoData: &GeoData{IPFile: "  "}}).Compile([]string{"geoip:cn"}); !errors.Is(err, ErrNoGeoData) {
+	if _, err := (Compiler{GeoData: NewGeoData(GeoFiles{IP: "  "})}).Compile([]string{"geoip:cn"}); !errors.Is(err, ErrNoGeoData) {
 		t.Fatalf("blank path error = %v, want %v", err, ErrNoGeoData)
 	}
 }
@@ -231,7 +237,7 @@ func TestPrivateFallbackOnBadRecord(t *testing.T) {
 	if err := os.WriteFile(path, appendBytesField(nil, 1, rec), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	m, err := Compiler{GeoData: &GeoData{IPFile: path}}.Compile([]string{"geoip:private"})
+	m, err := Compiler{GeoData: NewGeoData(GeoFiles{IP: path})}.Compile([]string{"geoip:private"})
 	if err != nil {
 		t.Fatalf("geoip:private with a bad record: %v", err)
 	}
@@ -286,7 +292,7 @@ func TestGeoDataDirFSReplaced(t *testing.T) {
 	name := writeDat(t, dir, "geoip.dat",
 		datEntry{code: "AA", cidrs: []string{"1.2.3.0/24"}},
 		datEntry{code: "BB", cidrs: []string{"5.6.7.0/24"}})
-	geo := &GeoData{FS: os.DirFS(dir), IPFile: "geoip.dat"}
+	geo := NewGeoData(GeoFiles{FS: os.DirFS(dir), IP: "geoip.dat"})
 	if !mustCompile(geo, []string{"geoip:aa"}).Match("1.2.3.4") {
 		t.Fatal("geoip:aa does not match")
 	}
@@ -317,7 +323,7 @@ func TestGeoSiteKeywordTrailingDot(t *testing.T) {
 		{Type: DomainRoot, Value: "Example.COM."},
 		{Type: DomainFull, Value: "."},
 	}})
-	geo := &GeoData{SiteFile: filepath.Join(dir, "geosite.dat")}
+	geo := NewGeoData(GeoFiles{Site: filepath.Join(dir, "geosite.dat")})
 	domains, err := geo.LoadSite("", "x")
 	if err != nil || len(domains) != 2 || domains[0].Value != "google." || domains[1].Value != "example.com" {
 		t.Fatalf("LoadSite() = %+v, %v", domains, err)

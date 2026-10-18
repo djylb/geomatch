@@ -3,6 +3,7 @@ package geomatch
 import (
 	"errors"
 	"fmt"
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -19,15 +20,22 @@ type Compiler struct {
 	// GeoData reads geoip:, geosite: and ext: rules. Every Matcher compiled
 	// with one GeoData shares the geodata entries compiled for it. Nil reads
 	// no geodata: geoip:private uses the built-in ranges, ext: rules read
-	// their files relative to the working directory, and other geoip: and
-	// geosite: rules fail with ErrNoGeoData.
+	// only absolute file names, and other geoip: and geosite: rules fail
+	// with ErrNoGeoData.
 	GeoData *GeoData
+	// PlainDomain is the kind of a domain written without a kind, such as
+	// example.com: RuleKeyword, the zero value, matches hosts containing
+	// it, as V2Ray reads it; RuleDomain matches it and its subdomains; and
+	// RuleFull matches it exactly. With RuleDomain or RuleFull, a leading
+	// dot, as in .example.com, means the subdomains only. Rule.UnmarshalText
+	// and the package's functions read it as RuleKeyword.
+	PlainDomain RuleKind
 	// Kinds are the rule kinds allowed; the zero KindSet allows all. Other
-	// rules fail with ErrKindDisabled.
+	// rules fail with a *KindError, which is an ErrKindDisabled.
 	Kinds KindSet
 	// ExtFiles is which files ext:, ext-ip: and ext-domain: rules may name.
 	// The zero value, ExtAny, allows any; other rules fail with
-	// ErrExtDenied.
+	// ErrExtDenied. Relative names are looked up as GeoFiles.Dir tells.
 	ExtFiles ExtAccess
 	// Limits bound the rules of one call; rules beyond them fail with
 	// ErrLimit.
@@ -74,6 +82,21 @@ func (s KindSet) Without(kinds ...RuleKind) KindSet {
 	return base &^ KindsOf(kinds...)
 }
 
+// String lists the kinds of s, as "ip, geoip"; the zero KindSet lists every
+// kind.
+func (s KindSet) String() string {
+	var names []string
+	for k := RuleIP; k <= RuleExt; k++ {
+		if s.Has(k) {
+			names = append(names, k.String())
+		}
+	}
+	if len(names) == 0 {
+		return "none"
+	}
+	return strings.Join(names, ", ")
+}
+
 // Has reports whether s holds k; the zero KindSet holds every kind.
 func (s KindSet) Has(k RuleKind) bool {
 	if k < RuleIP || k > RuleExt {
@@ -90,22 +113,26 @@ const (
 	// ExtAny allows any file.
 	ExtAny ExtAccess = iota
 	// ExtLocal allows relative names that stay within the directory they
-	// are looked up in (GeoData.Dir, or the directory of the default file):
-	// no absolute path, volume name or .. element.
+	// are looked up in, as GeoFiles.Dir tells: no absolute path, volume name
+	// or .. element. Without such a directory it allows none.
 	ExtLocal
 	// ExtNone allows no ext: rules, so that only the files of GeoData are
 	// read.
 	ExtNone
 )
 
-// check reports whether an ext: rule may name file.
-func (a ExtAccess) check(file string) error {
+// check reports whether an ext: rule may name file, looked up among the
+// files v.
+func (a ExtAccess) check(file string, v view) error {
 	switch a {
 	case ExtAny:
 		return nil
 	case ExtLocal:
 		if !localFile(file) {
 			return fmt.Errorf("%w: %s is not a local name", ErrExtDenied, file)
+		}
+		if v.extDir(path.Dir, kindAny) == "" {
+			return fmt.Errorf("%w: no directory for ext: files; set GeoFiles.Dir", ErrExtDenied)
 		}
 		return nil
 	case ExtNone:
@@ -165,18 +192,19 @@ func MustCompile(rules []string) *Matcher {
 // String form would be.
 func CompileRules(rules []Rule) (*Matcher, error) { return Compiler{}.CompileRules(rules) }
 
-// ParseRule is the package's ParseRule with the settings of c.
+// ParseRule is the package's ParseRule with the settings of c. Its error is
+// a *RuleError, as ParseRules gives for each rule, with Index 0.
 func (c Compiler) ParseRule(s string) (Rule, error) {
-	r, err := c.reader().read(s)
+	r, err := c.reader(c.GeoData.view()).read(s)
 	if err != nil {
-		return Rule{}, fmt.Errorf("geomatch: rule %q: %w", trimRule(s), err)
+		return Rule{}, &RuleError{Rule: trimRule(s), Err: err}
 	}
 	return r, nil
 }
 
 // ParseRules is the package's ParseRules with the settings of c.
 func (c Compiler) ParseRules(rules []string) ([]Rule, error) {
-	rd := c.reader()
+	rd := c.reader(c.GeoData.view())
 	var out []Rule
 	var errs RuleErrors
 	for i, s := range rules {
@@ -192,9 +220,27 @@ func (c Compiler) ParseRules(rules []string) ([]Rule, error) {
 	return out, errs.err()
 }
 
+// Normalize returns rules as ParseRules reads them, in their canonical
+// spelling and without duplicates, in order, for example to save
+// configuration as it will be compiled. Empty rules and comments are
+// dropped, and invalid rules, which the error lists as ParseRules does.
+func (c Compiler) Normalize(rules []string) ([]string, error) {
+	parsed, err := c.ParseRules(rules)
+	out := make([]string, 0, len(parsed))
+	seen := make(map[string]bool, len(parsed))
+	for _, r := range parsed {
+		if s := r.String(); !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out, err
+}
+
 // Compile is the package's Compile with the settings of c.
 func (c Compiler) Compile(rules []string) (*Matcher, error) {
-	rd, b := c.reader(), newBuilder(c.GeoData)
+	b := newBuilder(c.GeoData)
+	rd := c.reader(b.view)
 	var errs RuleErrors
 	for i, s := range rules {
 		r, err := rd.read(s)
@@ -214,7 +260,8 @@ func (c Compiler) Compile(rules []string) (*Matcher, error) {
 
 // CompileRules is the package's CompileRules with the settings of c.
 func (c Compiler) CompileRules(rules []Rule) (*Matcher, error) {
-	rd, b := c.reader(), newBuilder(c.GeoData)
+	b := newBuilder(c.GeoData)
+	rd := c.reader(b.view)
 	var errs RuleErrors
 	b.given = len(rules)
 	for i, r := range rules {
@@ -233,10 +280,11 @@ func (c Compiler) CompileRules(rules []Rule) (*Matcher, error) {
 // ruleReader parses the rules of one call, counting them for the limits.
 type ruleReader struct {
 	c              *Compiler
+	view           view
 	rules, regexps int
 }
 
-func (c Compiler) reader() *ruleReader { return &ruleReader{c: &c} }
+func (c Compiler) reader(v view) *ruleReader { return &ruleReader{c: &c, view: v} }
 
 // read parses s and checks it against the settings. Its errors are
 // ErrInvalidRule, or errNoRule for an empty rule or a comment.
@@ -248,15 +296,23 @@ func (rd *ruleReader) read(s string) (Rule, error) {
 	if n := len(trimRule(s)); lim.MaxRuleLen > 0 && n > lim.MaxRuleLen {
 		return Rule{}, fmt.Errorf("%w: %d bytes, more than %d", ErrLimit, n, lim.MaxRuleLen)
 	}
-	r, err := parseRule(s)
+	plain := c.PlainDomain
+	switch plain {
+	case 0:
+		plain = RuleKeyword
+	case RuleKeyword, RuleDomain, RuleFull:
+	default:
+		return Rule{}, fmt.Errorf("%w: Compiler.PlainDomain is %v, not keyword, domain or full", ErrInvalidRule, plain)
+	}
+	r, err := parseRule(s, plain)
 	if err != nil {
 		return Rule{}, withClass(err, ErrInvalidRule)
 	}
 	if !c.Kinds.Has(r.Kind) {
-		return Rule{}, fmt.Errorf("%w: %s", ErrKindDisabled, r.Kind)
+		return Rule{}, &KindError{Kind: r.Kind, Allowed: c.Kinds}
 	}
 	if r.File != "" {
-		if err := c.ExtFiles.check(r.File); err != nil {
+		if err := c.ExtFiles.check(r.File, rd.view); err != nil {
 			return Rule{}, err
 		}
 	}

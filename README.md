@@ -25,7 +25,7 @@ go get github.com/djylb/geomatch
 
 ```go
 var compiler = geomatch.Compiler{
-	GeoData: &geomatch.GeoData{IPFile: "geoip.dat", SiteFile: "geosite.dat"},
+	GeoData: geomatch.NewGeoData(geomatch.GeoFiles{IP: "geoip.dat", Site: "geosite.dat"}),
 }
 
 func newMatcher() *geomatch.Matcher {
@@ -142,13 +142,17 @@ per-client and per-resource ones, in one of two ways:
   most specific first for settings that override general ones. Addresses
   that no level's rules match are allowed, or denied with `DenyUnmatched`.
 
-A level that is not set, the zero `Policy`, changes nothing either way, and
-`Decision.Level` tells which level decided:
+A level that is not set, the zero `Policy`, changes nothing either way.
+`Decision.Level` tells which level decided, and with `Names` so do
+`Decision.LevelName` and the `Decision`'s text:
 
 ```go
-levels := geomatch.Levels{Policies: []geomatch.Policy{global, user, client, tunnel}}
+levels := geomatch.Levels{
+	Policies: []geomatch.Policy{global, user, client, tunnel},
+	Names:    []string{"global", "user 7", "client 12", "tunnel 3"},
+}
 if d := levels.DecideNetAddr(conn.RemoteAddr()); !d.Allowed {
-	log.Printf("%s: %v", levelNames[d.Level], d) // "user: denied by geoip:cn"
+	log.Printf("%v %v", conn.RemoteAddr(), d) // "192.0.2.7:51234 denied by geoip:cn (user 7)"
 }
 ```
 
@@ -186,16 +190,22 @@ In short:
 //go:embed geo/geoip.dat geo/geosite.dat
 var geoFiles embed.FS
 
-var geo = &geomatch.GeoData{FS: geoFiles, IPFile: "geo/geoip.dat", SiteFile: "geo/geosite.dat"}
+var geo = geomatch.NewGeoData(geomatch.GeoFiles{FS: geoFiles, IP: "geo/geoip.dat", Site: "geo/geosite.dat"})
 ```
 
+Use one `GeoData` for the program, so that its compiled entries are shared.
 Without `FS`, the files are read from the operating system. A file updated in
 place or replaced is indexed again the next time a rule needs it; compile the
 rules again to pick up new data, which reuses everything compiled from files
 that did not change. `Matcher.Stale` reports when a file it was compiled
 from changed or appeared, and `Matcher.Sources` lists those files.
-`GeoData.LoadIP`, `LoadSite`, `IPCodes` and `SiteCodes` read the files
-directly, for example to list the categories a geosite file offers.
+`GeoData.SetFiles` changes the files while the program runs, such as when
+configuration is reloaded; Matchers of the old files then report `Stale`.
+`GeoData.Check` looks at every file it has read and returns a generation
+that grows when one changed, so a program with many `Live`s refreshes them
+only when it grew. `GeoData.LoadIP`, `LoadSite`, `IPCodes` and `SiteCodes`
+read the files directly, for example to list the categories a geosite file
+offers.
 
 ### Updating geodata while running
 
@@ -239,7 +249,7 @@ clients := geomatch.Compiler{GeoData: geo, Kinds: geomatch.IPKinds}
 users := geomatch.Compiler{
 	GeoData:  geo,
 	Kinds:    geomatch.AllKinds.Without(geomatch.RuleRegexp),
-	ExtFiles: geomatch.ExtLocal, // ext: names within GeoData.Dir; ExtNone disables ext:
+	ExtFiles: geomatch.ExtLocal, // ext: names within the geodata directory; ExtNone disables ext:
 	Limits:   geomatch.Limits{MaxRules: 1000, MaxRuleLen: 256},
 }
 
@@ -254,14 +264,30 @@ invalid: `ParseRules` rejects them as `Compile` does, so validating
 configuration catches them. Every skipped rule's error is an
 `ErrInvalidRule`, a fault of the rule, or an `ErrGeoData`, a fault of the
 geodata at hand, such as a missing file; `RuleErrors.Filter` picks either.
+A rule of a kind left out fails with a `*KindError`, which holds the kind
+read and the kinds allowed, and says so: `keyword rules are not allowed here
+(allowed: ip, geoip)`.
+
+A domain written without a kind, such as `example.com`, matches hosts that
+contain it, as V2Ray reads it. That is the widest reading, so `PlainDomain`
+can make it `domain:` (the domain and its subdomains) or `full:` instead:
+
+```go
+users.PlainDomain = geomatch.RuleDomain // "example.com" is domain:example.com
+```
+
+A misspelt kind, such as `ful:example.com`, and an IP range, such as
+`1.1.1.1-1.1.1.5`, are invalid rather than read as keywords.
 
 ### Parsed rules
 
 `ParseRule` and `ParseRules`, or those of a `Compiler`, check rules without
 reading any geodata, for example to validate configuration input, and return
 them in a normal form whose `String` is the canonical spelling.
+`Normalize` returns them as canonical text without duplicates, to save.
 `CompileRules` compiles parsed or built rules, and `Matcher.Rules` returns
-the rules of a `Matcher`:
+the rules of a `Matcher`. `ParseRule` fails with a `*RuleError`, and
+`ParseRules` with a `RuleErrors` of them:
 
 ```go
 func validate(text string) error {
@@ -292,17 +318,17 @@ uses `encoding.TextUnmarshaler`; the `Compiler`'s restrictions apply when
 | `192.0.2.1`, `[2001:db8::1]:443`        | the address                                                   | `RuleIP`        |
 | `10.0.0.0/8`, `2001:db8::/32`           | the CIDR prefix                                               | `RuleIP`        |
 | `10.*`, `192.168.*.*`                   | IPv4 addresses with those leading octets                      | `RuleIP`        |
-| `geoip:cn`                              | an entry of `GeoData.IPFile`                                  | `RuleGeoIP`     |
+| `geoip:cn`                              | an entry of the geoip file, `GeoFiles.IP`                     | `RuleGeoIP`     |
 | `geoip:!cn`                             | every address outside that entry                              | `RuleGeoIP`     |
 | `geoip:private`                         | private and special-use ranges, built in if the file lacks it | `RuleGeoIP`     |
 | `ext-ip:file.dat:code`                  | an entry of another geoip file                                | `RuleGeoIP`     |
 | `full:example.com`                      | exactly `example.com`                                         | `RuleFull`      |
 | `domain:example.com`, `*example.com`    | `example.com` and its subdomains                              | `RuleDomain`    |
 | `*.example.com`                         | the subdomains of `example.com` only                          | `RuleSubdomain` |
-| `keyword:ads`, `ads`                    | hosts containing the text                                     | `RuleKeyword`   |
+| `keyword:ads`, `ads`                    | hosts containing the text (see `PlainDomain`)                 | `RuleKeyword`   |
 | `regexp:^ads?\.`                        | hosts matching the regular expression, case-insensitively     | `RuleRegexp`    |
 | `dotless:`, `dotless:intra`             | hosts without a dot, or those of them containing the text     | `RuleDotless`   |
-| `geosite:google`                        | an entry of `GeoData.SiteFile`                                | `RuleGeoSite`   |
+| `geosite:google`                        | an entry of the geosite file, `GeoFiles.Site`                 | `RuleGeoSite`   |
 | `geosite:google@cn@ads`                 | its domains having every listed attribute                     | `RuleGeoSite`   |
 | `ext-domain:file.dat:code`              | an entry of another geosite file                              | `RuleGeoSite`   |
 | `ext:file.dat:code`                     | an entry of either kind, told apart by the file's contents    | `RuleExt`       |
@@ -310,7 +336,9 @@ uses `encoding.TextUnmarshaler`; the `Compiler`'s restrictions apply when
 Rule kinds and codes are case-insensitive, a full-width colon (`：`) is read as
 a colon, hosts may be written as URLs or `host:port`, and lines starting with
 `#` or `;` are comments. Relative file names of `ext` rules are looked up in
-`GeoData.Dir`, or next to `SiteFile` or `IPFile`. IP rules never match domain
+`GeoFiles.Dir`, or next to the default file of the rule's kind, or the other
+one, or in the root of `FS`, never in the working directory. IP rules never
+match domain
 names and domain rules never match IP addresses; IPv4-mapped IPv6 addresses
 match as IPv4. `regexp:` matches regardless of case, and `dotless:` takes
 plain text.

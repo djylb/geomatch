@@ -79,7 +79,7 @@ func testGeoData(t testing.TB) *GeoData {
 		}},
 		datEntry{code: "GOOGLE", domains: []Domain{{Type: DomainRoot, Value: "google.com"}}},
 	)
-	return &GeoData{IPFile: ip, SiteFile: site}
+	return NewGeoData(GeoFiles{IP: ip, Site: site})
 }
 
 func TestHostOf(t *testing.T) {
@@ -204,7 +204,7 @@ func TestCompileErrors(t *testing.T) {
 
 func TestGeoRules(t *testing.T) {
 	geo := testGeoData(t)
-	dir := filepath.Dir(geo.IPFile)
+	dir := filepath.Dir(geo.Files().IP)
 	m, err := Compiler{GeoData: geo}.Compile([]string{"geoip:cn", "geoip:!us", "geosite:cn@api", "GEOSITE:google", "geoip:private"})
 	if err != nil {
 		t.Fatal(err)
@@ -241,13 +241,13 @@ func TestGeoRules(t *testing.T) {
 	}
 
 	// ext: reads either kind of file, relative to the default files.
-	ext := mustCompile(geo, []string{"ext:geoip.dat:cn", "ext:geosite.dat:google", "ext-ip:" + geo.IPFile + ":us", "ext-domain:geosite.dat:cn@cn"})
+	ext := mustCompile(geo, []string{"ext:geoip.dat:cn", "ext:geosite.dat:google", "ext-ip:" + geo.Files().IP + ":us", "ext-domain:geosite.dat:cn@cn"})
 	for addr, want := range map[string]bool{"1.2.3.4": true, "8.8.8.8": true, "google.com": true, "qq.com": true, "exact.cn": false} {
 		if got := ext.Match(addr); got != want {
 			t.Errorf("ext Match(%q) = %v, want %v", addr, got, want)
 		}
 	}
-	if _, err := (Compiler{GeoData: &GeoData{Dir: dir}}).Compile([]string{"ext:geosite.dat:cn@x@y", "ext:geoip.dat:cn@x", "ext:geosite.dat:!cn"}); err == nil {
+	if _, err := (Compiler{GeoData: NewGeoData(GeoFiles{Dir: dir})}).Compile([]string{"ext:geosite.dat:cn@x@y", "ext:geoip.dat:cn@x", "ext:geosite.dat:!cn"}); err == nil {
 		t.Error("invalid ext: rules accepted")
 	}
 	if _, err := (Compiler{GeoData: geo}).Compile([]string{"geoip:nope"}); !errors.Is(err, ErrCodeNotFound) {
@@ -266,11 +266,11 @@ func TestGeoDataCodesAndReload(t *testing.T) {
 	}
 
 	// A rewritten file is indexed again.
-	if err := os.WriteFile(geo.IPFile, encodeDat(datEntry{code: "CN", cidrs: []string{"7.7.7.0/24"}}), 0o600); err != nil {
+	if err := os.WriteFile(geo.Files().IP, encodeDat(datEntry{code: "CN", cidrs: []string{"7.7.7.0/24"}}), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	later := time.Now().Add(time.Minute)
-	if err := os.Chtimes(geo.IPFile, later, later); err != nil {
+	if err := os.Chtimes(geo.Files().IP, later, later); err != nil {
 		t.Fatal(err)
 	}
 	if cn, err := geo.LoadIP("", "cn"); err != nil || len(cn.Prefixes) != 1 || cn.Prefixes[0].String() != "7.7.7.0/24" {
@@ -282,10 +282,10 @@ func TestGeoDataCodesAndReload(t *testing.T) {
 	}
 
 	// PRIVATE falls back to the built-in ranges.
-	if p, err := (&GeoData{}).LoadIP("", "private"); err != nil || len(p.Prefixes) == 0 {
+	if p, err := (NewGeoData(GeoFiles{})).LoadIP("", "private"); err != nil || len(p.Prefixes) == 0 {
 		t.Fatalf("built-in private = %v, %v", p, err)
 	}
-	if err := os.WriteFile(geo.IPFile, []byte{0x0a, 0x10, 1}, 0o600); err != nil {
+	if err := os.WriteFile(geo.Files().IP, []byte{0x0a, 0x10, 1}, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := geo.LoadIP("", "cn"); !errors.Is(err, errProto) {
@@ -413,7 +413,7 @@ func TestRealGeoData(t *testing.T) {
 	if ip == "" || site == "" {
 		t.Skip("set GEOMATCH_GEOIP and GEOMATCH_GEOSITE to geoip.dat and geosite.dat")
 	}
-	geo := &GeoData{IPFile: ip, SiteFile: site}
+	geo := NewGeoData(GeoFiles{IP: ip, Site: site})
 	m, err := Compiler{GeoData: geo}.Compile([]string{"geoip:cn", "geosite:cn"})
 	if err != nil {
 		t.Fatal(err)

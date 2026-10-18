@@ -94,6 +94,12 @@ func (m *Mode) UnmarshalText(text []byte) error {
 //
 //goland:noinspection GoMixedReceiverTypes
 func (m *Mode) UnmarshalJSON(b []byte) error {
+	return unmarshalJSONText(b, m.UnmarshalText)
+}
+
+// unmarshalJSONText reads a JSON string or number b as text, which a JSON
+// null leaves unread.
+func unmarshalJSONText(b []byte, unmarshal func([]byte) error) error {
 	s := string(b)
 	if s == "null" {
 		return nil
@@ -101,10 +107,10 @@ func (m *Mode) UnmarshalJSON(b []byte) error {
 	if strings.HasPrefix(s, `"`) {
 		var err error
 		if s, err = strconv.Unquote(s); err != nil {
-			return fmt.Errorf("geomatch: policy mode %s: %w", b, err)
+			return fmt.Errorf("geomatch: %s: %w", b, err)
 		}
 	}
-	return m.UnmarshalText([]byte(s))
+	return unmarshal([]byte(s))
 }
 
 // Priority decides for an address on both lists of a Policy. Unknown
@@ -137,14 +143,14 @@ func (p Priority) String() string {
 }
 
 // ParsePriority parses a priority from its name or the list that wins:
-// deny-first, deny, denylist or blacklist; allow-first, allow, allowlist or
-// whitelist. Case, surrounding spaces, and - or _ in names are ignored; an
-// empty string is DenyFirst.
+// deny-first, deny, denylist, blacklist or 0; allow-first, allow, allowlist,
+// whitelist or 1. Case, surrounding spaces, and - or _ in names are ignored;
+// an empty string is DenyFirst.
 func ParsePriority(s string) (Priority, error) {
 	switch strings.NewReplacer("-", "", "_", "").Replace(strings.ToLower(strings.TrimSpace(s))) {
-	case "denyfirst", "deny", "denylist", "blacklist", "blocklist", "":
+	case "denyfirst", "deny", "denylist", "blacklist", "blocklist", "0", "":
 		return DenyFirst, nil
-	case "allowfirst", "allow", "allowlist", "whitelist":
+	case "allowfirst", "allow", "allowlist", "whitelist", "1":
 		return AllowFirst, nil
 	}
 	return DenyFirst, fmt.Errorf("geomatch: unknown priority %q", s)
@@ -170,6 +176,14 @@ func (p *Priority) UnmarshalText(text []byte) error {
 	}
 	*p = v
 	return nil
+}
+
+// UnmarshalJSON sets p from a JSON string that ParsePriority reads or from a
+// JSON number 0 or 1. A JSON null leaves p unchanged.
+//
+//goland:noinspection GoMixedReceiverTypes
+func (p *Priority) UnmarshalJSON(b []byte) error {
+	return unmarshalJSONText(b, p.UnmarshalText)
 }
 
 // allowlist is the list of an allowlist Mode, which is set even without

@@ -90,7 +90,7 @@ func TestRouterFollowsLive(t *testing.T) {
 	if r.Route("1.2.3.4") != "direct" {
 		t.Fatal("before update")
 	}
-	replaceFile(t, geo.IPFile, encodeDat(datEntry{code: "CN", cidrs: []string{"7.7.7.0/24"}}))
+	replaceFile(t, geo.Files().IP, encodeDat(datEntry{code: "CN", cidrs: []string{"7.7.7.0/24"}}))
 	if _, err := l.Refresh(); err != nil {
 		t.Fatal(err)
 	}

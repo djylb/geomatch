@@ -67,7 +67,7 @@ func TestRegexpPrefilter(t *testing.T) {
 	hosts := []string{"13mei6.buzz", "a.13mei5.buzz", "13mei8.buzz", "12vod-adaptive.akamaized.net", "vod-adaptive.akamaized.net",
 		"ads.example.com", "ad.example.com", "abc", "ac.d", "straße", "STRASSE", "ſtraße", "xxx", "x", "unrelated.test"}
 	if path := os.Getenv("GEOMATCH_GEOSITE"); path != "" {
-		g := &GeoData{SiteFile: path}
+		g := NewGeoData(GeoFiles{Site: path})
 		for _, code := range []string{"geolocation-!cn", "cn", "google", "category-ads-all"} {
 			domains, err := g.LoadSite("", code)
 			if err != nil {

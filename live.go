@@ -103,7 +103,7 @@ func (l *Live) Refresh() (bool, error) {
 	}
 	m, err := l.compiler.Compile(l.rules)
 	if newGeoFailure(err, l.err) {
-		l.tried = &Matcher{geo: m.geo, sources: m.sources} // not its rules
+		l.tried = &Matcher{geo: m.geo, cfgGen: m.cfgGen, sources: m.sources} // not its rules
 		return false, err
 	}
 	l.err, l.tried = err, nil

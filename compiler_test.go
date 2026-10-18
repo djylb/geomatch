@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+	"testing/fstest"
 	"time"
 )
 
@@ -80,9 +81,18 @@ func TestCompilerExtFiles(t *testing.T) {
 		if _, err := (Compiler{ExtFiles: ExtNone}).ParseRule(r); !errors.Is(err, ErrExtDenied) {
 			t.Errorf("ExtNone accepted %s: %v", r, err)
 		}
-		_, err := (Compiler{ExtFiles: ExtLocal}).ParseRule(r)
+		_, err := (Compiler{GeoData: NewGeoData(GeoFiles{Dir: "/geo"}), ExtFiles: ExtLocal}).ParseRule(r)
 		if want := slices.Contains(outside, r); errors.Is(err, ErrExtDenied) != want {
 			t.Errorf("ExtLocal %s = %v, want denied %v", r, err, want)
+		}
+		// Without a directory to stay in, ExtLocal allows none.
+		if _, err := (Compiler{GeoData: NewGeoData(GeoFiles{}), ExtFiles: ExtLocal}).ParseRule(r); !errors.Is(err, ErrExtDenied) {
+			t.Errorf("ExtLocal without a directory accepted %s: %v", r, err)
+		}
+	}
+	for _, files := range []GeoFiles{{IP: "geo/geoip.dat"}, {Site: "geosite.dat"}, {FS: fstest.MapFS{}}} {
+		if _, err := (Compiler{GeoData: NewGeoData(files), ExtFiles: ExtLocal}).ParseRule("ext:a.dat:x"); err != nil {
+			t.Errorf("ExtLocal with %+v = %v", files, err)
 		}
 	}
 	for _, r := range []string{"geoip:cn", "geosite:cn"} {
@@ -205,10 +215,10 @@ func TestLevelsEveryLevel(t *testing.T) {
 
 func TestStaleAndSources(t *testing.T) {
 	geo := testGeoData(t)
-	missing := filepath.Join(filepath.Dir(geo.IPFile), "later.dat")
+	missing := filepath.Join(filepath.Dir(geo.Files().IP), "later.dat")
 	m := compileSkipping(t, Compiler{GeoData: geo}, []string{"geoip:cn", "geosite:cn", "geoip:us", "ext:later.dat:x", "10.0.0.0/8"}, 3)
 	src := m.Sources()
-	if len(src) != 3 || src[0].File != geo.IPFile || src[1].File != geo.SiteFile || src[2].File != missing ||
+	if len(src) != 3 || src[0].File != geo.Files().IP || src[1].File != geo.Files().Site || src[2].File != missing ||
 		src[0].Missing || src[0].Size == 0 || !src[2].Missing {
 		t.Fatalf("Sources() = %+v", src)
 	}
@@ -223,7 +233,7 @@ func TestStaleAndSources(t *testing.T) {
 	}
 	m = mustCompile(geo, []string{"geosite:cn"})
 	later := time.Now().Add(time.Hour)
-	if err := os.Chtimes(geo.SiteFile, later, later); err != nil {
+	if err := os.Chtimes(geo.Files().Site, later, later); err != nil {
 		t.Fatal(err)
 	}
 	if !m.Stale() {

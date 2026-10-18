@@ -35,7 +35,7 @@ func TestLiveRefresh(t *testing.T) {
 	}
 
 	// A new file, renamed over the old one.
-	replaceFile(t, geo.IPFile, encodeDat(datEntry{code: "CN", cidrs: []string{"7.7.7.0/24"}}))
+	replaceFile(t, geo.Files().IP, encodeDat(datEntry{code: "CN", cidrs: []string{"7.7.7.0/24"}}))
 	old := l.Matcher()
 	if replaced, err := l.Refresh(); !replaced || err != nil {
 		t.Fatalf("Refresh after update = %v, %v", replaced, err)
@@ -49,7 +49,7 @@ func TestLiveRefresh(t *testing.T) {
 
 	// A broken file keeps the Matcher, and is not compiled again until it
 	// changes.
-	replaceFile(t, geo.IPFile, []byte{0x0a, 0x10, 1})
+	replaceFile(t, geo.Files().IP, []byte{0x0a, 0x10, 1})
 	if replaced, err := l.Refresh(); replaced || !errors.Is(err, ErrGeoData) {
 		t.Fatalf("Refresh with a broken file = %v, %v", replaced, err)
 	}
@@ -61,13 +61,13 @@ func TestLiveRefresh(t *testing.T) {
 	}
 
 	// So does a removed file, and a good file again replaces it.
-	if err := os.Remove(geo.IPFile); err != nil {
+	if err := os.Remove(geo.Files().IP); err != nil {
 		t.Fatal(err)
 	}
 	if replaced, err := l.Refresh(); replaced || !errors.Is(err, ErrGeoData) {
 		t.Fatalf("Refresh with a removed file = %v, %v", replaced, err)
 	}
-	replaceFile(t, geo.IPFile, encodeDat(datEntry{code: "CN", cidrs: []string{"8.8.4.0/24"}}))
+	replaceFile(t, geo.Files().IP, encodeDat(datEntry{code: "CN", cidrs: []string{"8.8.4.0/24"}}))
 	if replaced, err := l.Refresh(); !replaced || err != nil || !l.Matcher().Match("8.8.4.4") {
 		t.Fatalf("Refresh after repair = %v, %v", replaced, err)
 	}
@@ -75,7 +75,7 @@ func TestLiveRefresh(t *testing.T) {
 
 func TestLiveMissingAtStart(t *testing.T) {
 	dir := t.TempDir()
-	geo := &GeoData{SiteFile: filepath.Join(dir, "geosite.dat")}
+	geo := NewGeoData(GeoFiles{Site: filepath.Join(dir, "geosite.dat")})
 	l, err := NewLive(Compiler{GeoData: geo}, []string{"geosite:cn", "domain:a.test"})
 	if !errors.Is(err, ErrGeoData) || !l.Matcher().Match("a.test") || l.Err() == nil {
 		t.Fatalf("NewLive without the file = %v", err)
@@ -84,7 +84,7 @@ func TestLiveMissingAtStart(t *testing.T) {
 	if replaced, err := l.Refresh(); replaced || err != nil {
 		t.Fatalf("Refresh, still missing = %v, %v", replaced, err)
 	}
-	replaceFile(t, geo.SiteFile, encodeDat(datEntry{code: "CN", domains: []Domain{{Type: DomainRoot, Value: "qq.com"}}}))
+	replaceFile(t, geo.Files().Site, encodeDat(datEntry{code: "CN", domains: []Domain{{Type: DomainRoot, Value: "qq.com"}}}))
 	if replaced, err := l.Refresh(); !replaced || err != nil || !l.Matcher().Match("qq.com") || l.Err() != nil {
 		t.Fatalf("Refresh once the file appears = %v, %v", replaced, err)
 	}
@@ -128,7 +128,7 @@ func TestLiveWatch(t *testing.T) {
 			reports <- replaced
 		})
 	}()
-	replaceFile(t, geo.SiteFile, encodeDat(datEntry{code: "GOOGLE", domains: []Domain{{Type: DomainRoot, Value: "new.test"}}}))
+	replaceFile(t, geo.Files().Site, encodeDat(datEntry{code: "GOOGLE", domains: []Domain{{Type: DomainRoot, Value: "new.test"}}}))
 	select {
 	case replaced := <-reports:
 		if !replaced || !l.Matcher().Match("new.test") {
@@ -171,7 +171,7 @@ func TestLiveConcurrent(t *testing.T) {
 		if i%2 == 1 {
 			cidr = "5.5.5.0/24"
 		}
-		replaceFile(t, geo.IPFile, encodeDat(datEntry{code: "CN", cidrs: []string{cidr}}))
+		replaceFile(t, geo.Files().IP, encodeDat(datEntry{code: "CN", cidrs: []string{cidr}}))
 		if i%5 == 0 {
 			_ = l.Update([]string{"geoip:cn", "geosite:cn"})
 		}
@@ -193,7 +193,7 @@ func TestPolicyFollowsLive(t *testing.T) {
 	if p.Allows("1.2.3.4") {
 		t.Fatal("denylist allows 1.2.3.4")
 	}
-	replaceFile(t, geo.IPFile, encodeDat(datEntry{code: "CN", cidrs: []string{"7.7.7.0/24"}}))
+	replaceFile(t, geo.Files().IP, encodeDat(datEntry{code: "CN", cidrs: []string{"7.7.7.0/24"}}))
 	if replaced, err := l.Refresh(); !replaced || err != nil {
 		t.Fatal(replaced, err)
 	}

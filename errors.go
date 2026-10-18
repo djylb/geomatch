@@ -14,7 +14,7 @@ var (
 	// anywhere: invalid syntax, or a rule that the Compiler does not allow.
 	ErrInvalidRule = errors.New("geomatch: invalid rule")
 	// ErrKindDisabled is the cause of a rule whose kind Compiler.Kinds
-	// leaves out. It is an ErrInvalidRule.
+	// leaves out, which a *KindError details. It is an ErrInvalidRule.
 	ErrKindDisabled = classed("rule kind not allowed", ErrInvalidRule)
 	// ErrExtDenied is the cause of an ext: rule whose file Compiler.ExtFiles
 	// does not allow. It is an ErrInvalidRule.
@@ -34,6 +34,22 @@ var (
 	// code. It is an ErrGeoData.
 	ErrCodeNotFound = classed("geomatch: code not found in geodata file", ErrGeoData)
 )
+
+// KindError is the cause of a rule whose kind Compiler.Kinds leaves out,
+// with the kind read and the kinds allowed, for messages such as "only IP
+// rules are allowed here". It is an ErrKindDisabled and an ErrInvalidRule.
+type KindError struct {
+	Kind    RuleKind
+	Allowed KindSet
+}
+
+func (e *KindError) Error() string {
+	return fmt.Sprintf("%v rules are not allowed here (allowed: %v)", e.Kind, e.Allowed)
+}
+
+func (e *KindError) Is(target error) bool {
+	return target == ErrKindDisabled || target == ErrInvalidRule
+}
 
 // classErr is an error that errors.Is also reports as its class.
 type classErr struct {
@@ -64,8 +80,8 @@ func withClass(err, class error) error {
 	return &causeErr{err, class}
 }
 
-// RuleError reports a rule that was skipped, and why. errors.Is tells
-// ErrInvalidRule from ErrGeoData.
+// RuleError reports a rule that was rejected or skipped, and why. errors.Is
+// tells ErrInvalidRule from ErrGeoData.
 type RuleError struct {
 	// Index is the position of the rule in the slice given to ParseRules or
 	// Compile.
@@ -74,8 +90,10 @@ type RuleError struct {
 	Err   error
 }
 
+// Error describes the rule and the cause, without Index, which RuleErrors
+// adds for each rule of a list.
 func (e *RuleError) Error() string {
-	return fmt.Sprintf("geomatch: rules[%d] %q: %v", e.Index, e.Rule, e.Err)
+	return fmt.Sprintf("geomatch: rule %q: %v", e.Rule, e.Err)
 }
 
 func (e *RuleError) Unwrap() error { return e.Err }
@@ -86,14 +104,11 @@ func (e *RuleError) Unwrap() error { return e.Err }
 type RuleErrors []*RuleError
 
 func (e RuleErrors) Error() string {
-	var b strings.Builder
+	lines := make([]string, len(e))
 	for i, re := range e {
-		if i > 0 {
-			b.WriteByte('\n')
-		}
-		b.WriteString(re.Error())
+		lines[i] = fmt.Sprintf("geomatch: rules[%d] %q: %v", re.Index, re.Rule, re.Err)
 	}
-	return b.String()
+	return strings.Join(lines, "\n")
 }
 
 // Unwrap returns the errors for errors.Is and errors.As.

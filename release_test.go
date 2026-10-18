@@ -40,7 +40,7 @@ func (f eofFile) ReadAt(p []byte, off int64) (int, error) {
 
 func TestReadAtEOFWithFullRead(t *testing.T) {
 	data := encodeDat(datEntry{code: "AA", cidrs: []string{"1.0.0.0/8"}}, datEntry{code: "ZZ", cidrs: []string{"2.0.0.0/8"}})
-	geo := &GeoData{FS: eofFS{fstest.MapFS{"geoip.dat": {Data: data}}}, IPFile: "geoip.dat"}
+	geo := NewGeoData(GeoFiles{FS: eofFS{fstest.MapFS{"geoip.dat": {Data: data}}}, IP: "geoip.dat"})
 	m, err := Compiler{GeoData: geo}.Compile([]string{"geoip:zz", "geoip:aa"})
 	if err != nil || !m.Match("2.1.1.1") || !m.Match("1.1.1.1") {
 		t.Fatalf("Compile with EOF on the last record = %v", err)
@@ -66,7 +66,7 @@ func TestStaleUnreadableFiles(t *testing.T) {
 	if err := os.WriteFile(bad, []byte{0x0a, 0x10, 1}, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	m, err := Compiler{GeoData: &GeoData{IPFile: bad}}.Compile([]string{"geoip:cn"})
+	m, err := Compiler{GeoData: NewGeoData(GeoFiles{IP: bad})}.Compile([]string{"geoip:cn"})
 	if !errors.Is(err, ErrGeoData) {
 		t.Fatalf("malformed file error = %v", err)
 	}
@@ -85,7 +85,7 @@ func TestStaleUnreadableFiles(t *testing.T) {
 	}
 
 	// A directory exists but cannot be read as a file.
-	m, _ = Compiler{GeoData: &GeoData{SiteFile: dir}}.Compile([]string{"geosite:cn"})
+	m, _ = Compiler{GeoData: NewGeoData(GeoFiles{Site: dir})}.Compile([]string{"geosite:cn"})
 	if src := m.Sources(); len(src) != 1 || src[0].Missing || m.Stale() {
 		t.Errorf("unreadable file: Sources() = %+v, Stale() = %v", src, m.Stale())
 	}

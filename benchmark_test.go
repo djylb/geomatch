@@ -53,10 +53,10 @@ func BenchmarkRealGeoData(b *testing.B) {
 	rules := []string{"geoip:cn", "geosite:cn"}
 	b.Run("compile", func(b *testing.B) {
 		for b.Loop() {
-			mustCompile(&GeoData{IPFile: ip, SiteFile: site}, rules)
+			mustCompile(NewGeoData(GeoFiles{IP: ip, Site: site}), rules)
 		}
 	})
-	m := mustCompile(&GeoData{IPFile: ip, SiteFile: site}, rules)
+	m := mustCompile(NewGeoData(GeoFiles{IP: ip, Site: site}), rules)
 	b.Run("ip", func(b *testing.B) {
 		addr := netip.MustParseAddr("223.5.5.5")
 		for b.Loop() {

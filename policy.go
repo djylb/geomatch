@@ -73,8 +73,8 @@ func (p Policy) AllowsHostIP(host string, ip netip.Addr) bool {
 	return p.allows(hostIPTarget(host, ip))
 }
 
-// Decision is the answer of a Policy or Levels for an address, with
-// the rule that decided.
+// Decision is the answer of a Policy or Levels for an address, with the rule
+// that decided.
 type Decision struct {
 	Allowed bool
 	// Matched reports whether a rule decided; Rule is that rule, of the
@@ -84,18 +84,24 @@ type Decision struct {
 	// Level is the index of the policy that decided among Levels, or -1 if
 	// none did. It is 0 for a single Policy.
 	Level int
+	// LevelName is the name of that level, from Levels.Names, or "".
+	LevelName string
 }
 
-// String describes d for logs, as "denied by geoip:cn" or "allowed: no rule
-// matched"; among Levels it names the level after the first.
+// String describes d for logs, as "denied by geoip:cn (user)" or "allowed:
+// no rule matched"; it names the level by LevelName, or else by number
+// after the first.
 func (d Decision) String() string {
 	verdict := "denied"
 	if d.Allowed {
 		verdict = "allowed"
 	}
 	level := ""
-	if d.Level > 0 {
-		level = " at level " + strconv.Itoa(d.Level)
+	switch {
+	case d.LevelName != "":
+		level = " (" + d.LevelName + ")"
+	case d.Level > 0:
+		level = " (level " + strconv.Itoa(d.Level) + ")"
 	}
 	if !d.Matched {
 		return verdict + ": no rule matched" + level

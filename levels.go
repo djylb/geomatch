@@ -24,6 +24,9 @@ import (
 // not changed.
 type Levels struct {
 	Policies []Policy
+	// Names, if set, name the levels, as "global" or "user 7", for
+	// Decision.LevelName and its String.
+	Names []string
 	// FirstMatch lets the first level whose rules match decide, rather than
 	// requiring every level to allow.
 	FirstMatch bool
@@ -94,19 +97,26 @@ func (l Levels) decide(t target) Decision {
 		p := &l.Policies[i]
 		if l.FirstMatch {
 			if d, ok := p.find(t); ok {
-				d.Level = i
-				return d
+				return l.at(d, i)
 			}
 			continue
 		}
 		d := p.decide(t)
-		d.Level = i
 		if !d.Allowed {
-			return d
+			return l.at(d, i)
 		}
 		if d.Matched && out.Level < 0 {
-			out = d
+			out = l.at(d, i)
 		}
 	}
 	return out
+}
+
+// at returns d as the decision of level i.
+func (l Levels) at(d Decision, i int) Decision {
+	d.Level = i
+	if i < len(l.Names) {
+		d.LevelName = l.Names[i]
+	}
+	return d
 }

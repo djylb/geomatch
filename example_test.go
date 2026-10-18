@@ -36,7 +36,7 @@ func Example() {
 
 // Allow only clients from China and private networks, by geodata files.
 func ExampleCompiler_Compile() {
-	geo := &geomatch.GeoData{IPFile: "/etc/geodata/geoip.dat", SiteFile: "/etc/geodata/geosite.dat"}
+	geo := geomatch.NewGeoData(geomatch.GeoFiles{IP: "/etc/geodata/geoip.dat", Site: "/etc/geodata/geosite.dat"})
 	text := "geoip:cn\ngeoip:private\n"
 	m, err := geomatch.Compiler{GeoData: geo}.Compile(geomatch.SplitLines(text))
 	if err != nil {
@@ -47,7 +47,7 @@ func ExampleCompiler_Compile() {
 }
 
 func ExampleGeoData_SiteCodes() {
-	geo := &geomatch.GeoData{SiteFile: "/etc/geodata/geosite.dat"}
+	geo := geomatch.NewGeoData(geomatch.GeoFiles{Site: "/etc/geodata/geosite.dat"})
 	codes, err := geo.SiteCodes("")
 	if err != nil {
 		log.Println(err)
@@ -128,7 +128,7 @@ func ExampleCompiler() {
 		}
 	}
 	// Output:
-	// invalid: regexp:^ads - rule kind not allowed: regexp
+	// invalid: regexp:^ads - regexp rules are not allowed here (allowed: ip, geoip, full, domain, subdomain, keyword, dotless, geosite, ext)
 	// invalid: ext:/etc/geo.dat:cn - geodata file not allowed: /etc/geo.dat is not a local name
 	// no data: geosite:cn
 }
@@ -136,7 +136,7 @@ func ExampleCompiler() {
 // Keep rules up to date with geodata files that are updated while the
 // program runs.
 func ExampleLive() {
-	geo := &geomatch.GeoData{IPFile: "/etc/geodata/geoip.dat", SiteFile: "/etc/geodata/geosite.dat"}
+	geo := geomatch.NewGeoData(geomatch.GeoFiles{IP: "/etc/geodata/geoip.dat", Site: "/etc/geodata/geosite.dat"})
 	live, err := geomatch.NewLive(geomatch.Compiler{GeoData: geo}, []string{"geoip:cn", "geosite:cn"})
 	if err != nil {
 		log.Println(err) // rules that were skipped
@@ -216,10 +216,10 @@ func ExampleLevels() {
 		fmt.Println(addr, levels.Decide(addr))
 	}
 	// Output:
-	// 1.1.1.1:443 allowed by 1.1.1.0/24 at level 1
+	// 1.1.1.1:443 allowed by 1.1.1.0/24 (level 1)
 	// 10.0.0.1 denied by geoip:private
-	// 8.8.8.8 denied by 8.8.8.8 at level 2
-	// 9.9.9.9 denied: no rule matched at level 1
+	// 8.8.8.8 denied by 8.8.8.8 (level 2)
+	// 9.9.9.9 denied: no rule matched (level 1)
 }
 
 // The first level whose rules match decides: here the global level
@@ -235,6 +235,6 @@ func ExampleLevels_firstMatch() {
 	}
 	// Output:
 	// 10.1.1.1 allowed by 10.1.0.0/16
-	// 10.2.1.1 denied by 10.0.0.0/8 at level 1
+	// 10.2.1.1 denied by 10.0.0.0/8 (level 1)
 	// 192.0.2.1 allowed: no rule matched
 }

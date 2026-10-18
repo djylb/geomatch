@@ -8,7 +8,7 @@
 // hash table lookup per domain label, and a scan of any keywords and
 // regular expressions:
 //
-//	geo := &geomatch.GeoData{IPFile: "geoip.dat", SiteFile: "geosite.dat"}
+//	geo := geomatch.NewGeoData(geomatch.GeoFiles{IP: "geoip.dat", Site: "geosite.dat"})
 //	c := geomatch.Compiler{GeoData: geo}
 //	m, err := c.Compile([]string{"geoip:cn", "geosite:cn", "10.0.0.0/8"})
 //	if err != nil {
@@ -21,7 +21,7 @@
 //	192.0.2.1, [2001:db8::1]   an address, optionally with a port
 //	10.0.0.0/8, 2001:db8::/32  a CIDR prefix
 //	10.*, 192.168.*.*          an IPv4 address whose trailing octets are *
-//	geoip:cn                   an entry of GeoData.IPFile, by code
+//	geoip:cn                   an entry of the geoip file, by code
 //	geoip:!cn                  every address outside that entry
 //	geoip:private              private and special-use ranges, built in when
 //	                           the file lacks them or there is no file
@@ -33,10 +33,11 @@
 //	domain:example.com         example.com and its subdomains
 //	*example.com               the same
 //	*.example.com              the subdomains of example.com only
-//	keyword:example, example   hosts containing the text
+//	keyword:example, example   hosts containing the text; a plain domain is a
+//	                           keyword unless Compiler.PlainDomain says else
 //	regexp:^ex.*\.com$         hosts matching the regular expression
 //	dotless:, dotless:intra    hosts without a dot, or those containing the text
-//	geosite:google             an entry of GeoData.SiteFile, by code
+//	geosite:google             an entry of the geosite file, by code
 //	geosite:google@cn          the domains of that entry with every attribute
 //	ext-domain:file.dat:code   an entry of another geosite file
 //
