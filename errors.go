@@ -29,10 +29,10 @@ var (
 	ErrGeoData = errors.New("geomatch: geodata unavailable")
 	// ErrNoGeoData is returned when no geodata file is configured for a
 	// geoip: or geosite: rule. It is an ErrGeoData.
-	ErrNoGeoData = classed("geomatch: no geodata file configured", ErrGeoData)
+	ErrNoGeoData = classed("no geodata file configured", ErrGeoData)
 	// ErrCodeNotFound is returned when a geodata file has no entry for a
 	// code. It is an ErrGeoData.
-	ErrCodeNotFound = classed("geomatch: code not found in geodata file", ErrGeoData)
+	ErrCodeNotFound = classed("code not found in geodata file", ErrGeoData)
 )
 
 // KindError is the cause of a rule whose kind Compiler.Kinds leaves out,

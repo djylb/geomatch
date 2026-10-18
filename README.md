@@ -98,6 +98,18 @@ if d := denylist.DecideNetAddr(conn.RemoteAddr()); !d.Allowed {
 | both, `AllowFirst`        | allowed       | denied       | allowed | allowed    |
 | neither (zero `Policy`)   |               |              |         | allowed    |
 
+`HasIPRules` and `HasDomainRules`, on a `Policy`, `Levels` or `Matcher`,
+tell whether rules of that kind exist, so that a program resolves a host's
+address for `AllowsHostIP` only when an IP rule could change the answer:
+
+```go
+ip := netip.Addr{}
+if levels.HasIPRules() {
+	ip = resolve(host)
+}
+allowed := levels.AllowsHostIP(host, ip)
+```
+
 So a denylist with exceptions is `Deny` and `Allow` with `AllowFirst`, and an
 allowlist with exceptions `Allow` and `Deny` with `DenyFirst`. A list that is
 nil or compiled from no rules is not set, so compiling every list of a

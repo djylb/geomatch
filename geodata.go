@@ -240,14 +240,14 @@ func (g *GeoData) LoadIP(file, code string) (GeoIP, error) {
 	if err != nil && strings.EqualFold(strings.TrimSpace(code), "private") {
 		return GeoIP{Prefixes: slices.Clone(privatePrefixes)}, nil
 	}
-	return geo, err
+	return geo, prefixed(err)
 }
 
 // LoadSite reads the entries for code, case-insensitive, of the geosite file
 // at path file, as given, or of the site file when file is empty.
 func (g *GeoData) LoadSite(file, code string) ([]Domain, error) {
 	_, domains, _, err := g.load(file, func(f GeoFiles) string { return f.Site }, code, kindSite)
-	return domains, err
+	return domains, prefixed(err)
 }
 
 // IPCodes returns the codes of the geoip file at path file, as given, or of
@@ -264,6 +264,20 @@ func (g *GeoData) SiteCodes(file string) ([]string, error) {
 }
 
 func (g *GeoData) codes(file string, def func(GeoFiles) string) ([]string, error) {
+	codes, err := g.codesLocked(file, def)
+	return codes, prefixed(err)
+}
+
+// prefixed returns err, if any, with the package name, as an error of the
+// public methods rather than a cause in a RuleError.
+func prefixed(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("geomatch: %w", err)
+}
+
+func (g *GeoData) codesLocked(file string, def func(GeoFiles) string) ([]string, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	v := g.viewLocked()
@@ -369,9 +383,9 @@ func (g *GeoData) compiledRule(v view, r Rule) (*geoIPSet, *domainSet, *source, 
 		kind, name = kindSite, v.cfg.Site
 	case RuleExt:
 	case RuleIP, RuleFull, RuleDomain, RuleSubdomain, RuleKeyword, RuleRegexp, RuleDotless:
-		return nil, nil, nil, fmt.Errorf("geomatch: %v reads no geodata", r)
+		return nil, nil, nil, fmt.Errorf("%v reads no geodata", r)
 	default:
-		return nil, nil, nil, fmt.Errorf("geomatch: unknown rule kind %d", r.Kind)
+		return nil, nil, nil, fmt.Errorf("unknown rule kind %d", r.Kind)
 	}
 	if r.File != "" {
 		var err error

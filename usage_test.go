@@ -226,3 +226,24 @@ func TestMissingBounded(t *testing.T) {
 		t.Error("nil GeoData")
 	}
 }
+
+func TestHasRules(t *testing.T) {
+	ips, domains := MustCompile([]string{"10.0.0.0/8"}), MustCompile([]string{"domain:a.test"})
+	if p := (Policy{Allow: domains}); p.HasIPRules() || !p.HasDomainRules() {
+		t.Error("domain allowlist")
+	}
+	if p := (Policy{Allow: domains, Deny: ips}); !p.HasIPRules() || !p.HasDomainRules() {
+		t.Error("both lists")
+	}
+	if p := ModeAllowlist.Policy(nil); p.HasIPRules() || p.HasDomainRules() {
+		t.Error("allowlist without rules")
+	}
+	l := Levels{Policies: []Policy{{}, {Deny: domains}}}
+	if l.HasIPRules() || !l.HasDomainRules() {
+		t.Error("Levels without IP rules")
+	}
+	l.Policies = append(l.Policies, Policy{Deny: (*Live)(nil)}, Policy{Allow: ips})
+	if !l.HasIPRules() || (Levels{}).HasIPRules() || (Policy{}).HasDomainRules() {
+		t.Error("Levels with IP rules")
+	}
+}

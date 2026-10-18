@@ -129,6 +129,19 @@ func (p Policy) DecideHostIP(host string, ip netip.Addr) Decision {
 	return p.decide(hostIPTarget(host, ip))
 }
 
+// HasIPRules reports whether a list of p has rules that match IP addresses,
+// so that a caller with a host name resolves it, for AllowsHostIP, only when
+// an address could change the answer.
+func (p Policy) HasIPRules() bool {
+	return sourceMatcher(p.Allow).HasIPRules() || sourceMatcher(p.Deny).HasIPRules()
+}
+
+// HasDomainRules reports whether a list of p has rules that match domain
+// names.
+func (p Policy) HasDomainRules() bool {
+	return sourceMatcher(p.Allow).HasDomainRules() || sourceMatcher(p.Deny).HasDomainRules()
+}
+
 // lists returns the lists of p in the order they decide: the winning one
 // first, with the answer of each.
 func (p Policy) lists() (first, second MatcherSource, firstAllows bool) {

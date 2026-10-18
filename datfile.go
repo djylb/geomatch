@@ -29,7 +29,7 @@ type span struct{ off, n int64 }
 // mix them up.
 func (f *datFile) read(handle geoFile, name, code string) ([]byte, error) {
 	if code == "" {
-		return nil, errors.New("geomatch: empty geodata code")
+		return nil, errors.New("empty geodata code")
 	}
 	sp, ok := f.index[code]
 	if !ok {
@@ -69,9 +69,9 @@ type recKind struct {
 func resolveKind(name, code string, k recKind, kind int) (isIP bool, err error) {
 	switch {
 	case kind == kindIP && k.certain && !k.isIP:
-		return false, fmt.Errorf("geomatch: %s in %s is a geosite entry", code, name)
+		return false, fmt.Errorf("%s in %s is a geosite entry", code, name)
 	case kind == kindSite && k.certain && k.isIP:
-		return false, fmt.Errorf("geomatch: %s in %s is a geoip entry", code, name)
+		return false, fmt.Errorf("%s in %s is a geoip entry", code, name)
 	case kind == kindAny:
 		return k.isIP, nil
 	default:

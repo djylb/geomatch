@@ -6,7 +6,7 @@ import (
 )
 
 // errProto reports a malformed protobuf message in a geodata file.
-var errProto = classed("geomatch: malformed geodata record", ErrGeoData)
+var errProto = classed("malformed geodata record", ErrGeoData)
 
 // Protobuf wire types used by the geodata formats.
 const (

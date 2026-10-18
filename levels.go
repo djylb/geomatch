@@ -69,6 +69,28 @@ func (l Levels) DecideHostIP(host string, ip netip.Addr) Decision {
 	return l.decide(hostIPTarget(host, ip))
 }
 
+// HasIPRules reports whether a level has rules that match IP addresses, so
+// that a caller with a host name resolves it, for AllowsHostIP, only when an
+// address could change the answer.
+func (l Levels) HasIPRules() bool {
+	for _, p := range l.Policies {
+		if p.HasIPRules() {
+			return true
+		}
+	}
+	return false
+}
+
+// HasDomainRules reports whether a level has rules that match domain names.
+func (l Levels) HasDomainRules() bool {
+	for _, p := range l.Policies {
+		if p.HasDomainRules() {
+			return true
+		}
+	}
+	return false
+}
+
 func (l Levels) allows(t target) bool {
 	for i := range l.Policies {
 		p := &l.Policies[i]
