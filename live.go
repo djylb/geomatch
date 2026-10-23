@@ -14,7 +14,8 @@ import (
 // program picks up new geodata. Queries take the current Matcher without
 // locking; a new one replaces it whole, so no query sees a mix of old and
 // new data. Live starts no goroutines: call Refresh when the files may have
-// changed, or run Watch.
+// changed, or run Watch; a program with many Lives on one GeoData refreshes
+// them all with GeoData.RefreshLives or GeoData.WatchLives.
 //
 // Replace a geodata file by renaming a new file over it rather than by
 // writing it in place, so that a compile never reads a file half written
@@ -24,22 +25,80 @@ import (
 type Live struct {
 	compiler Compiler
 
-	mu    sync.Mutex // serializes compiles
-	rules []string
-	err   error    // of the current Matcher's compile
-	tried *Matcher // the sources of a compile that Refresh rejected, for Stale
+	mu sync.Mutex // serializes compiles
+	// rules are compiled with Compile, or parsed, when byRule is set, with
+	// CompileRules.
+	rules  []string
+	parsed []Rule
+	byRule bool
+	err    error    // of the current Matcher's compile
+	tried  *Matcher // the sources of a compile that Refresh rejected, for Stale
 
 	cur atomic.Pointer[Matcher]
+	// seen is the generation of the compiler's GeoData when the Live last
+	// compiled or checked its files, so that GeoData.RefreshLives skips it
+	// while no file changed.
+	seen atomic.Uint64
 }
 
 // NewLive compiles rules with c, as c.Compile does: the error lists the
 // rules skipped, and the Live holds the others.
 func NewLive(c Compiler, rules []string) (*Live, error) {
-	l := &Live{compiler: c, rules: slices.Clone(rules)}
-	m, err := c.Compile(l.rules)
+	return newLive(&Live{compiler: c, rules: slices.Clone(rules)})
+}
+
+// NewLiveRules is NewLive for parsed or built rules, which it compiles as
+// c.CompileRules does.
+func NewLiveRules(c Compiler, rules []Rule) (*Live, error) {
+	return newLive(&Live{compiler: c, parsed: cloneRules(rules), byRule: true})
+}
+
+func newLive(l *Live) (*Live, error) {
+	gen := l.generation()
+	m, err := l.compile()
 	l.cur.Store(m)
 	l.err = err
+	l.seen.Store(l.seenAfter(gen))
+	if g := l.compiler.GeoData; g != nil {
+		g.addLive(l)
+	}
 	return l, err
+}
+
+// compile compiles the rules of l.
+func (l *Live) compile() (*Matcher, error) {
+	if l.byRule {
+		return l.compiler.CompileRules(l.parsed)
+	}
+	return l.compiler.Compile(l.rules)
+}
+
+// generation returns the generation of the compiler's GeoData.
+func (l *Live) generation() uint64 {
+	return l.compiler.GeoData.Generation()
+}
+
+// unseen is a seen that no generation equals.
+const unseen = ^uint64(0)
+
+// seenAfter returns what seen records after a compile or check that started
+// at generation gen: gen, or unseen while a rule failed on geodata or a file
+// was missing, since GeoData.Check may not watch such files, so that
+// RefreshLives refreshes the Live every time, as Refresh would see the fix.
+func (l *Live) seenAfter(gen uint64) uint64 {
+	if l.tried != nil || errors.Is(l.err, ErrGeoData) || l.cur.Load().missingSource() {
+		return unseen
+	}
+	return gen
+}
+
+// cloneRules copies rules with their attributes.
+func cloneRules(rules []Rule) []Rule {
+	out := slices.Clone(rules)
+	for i := range out {
+		out[i].Attrs = slices.Clone(out[i].Attrs)
+	}
+	return out
 }
 
 // Matcher returns the current Matcher, for queries, such as
@@ -62,10 +121,18 @@ func (l *Live) Err() error {
 	return l.err
 }
 
-// Rules returns the rules that the Live compiles.
+// Rules returns the rules that the Live compiles; rules given as Rule values
+// in the spelling of Rule.String.
 func (l *Live) Rules() []string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.byRule {
+		out := make([]string, len(l.parsed))
+		for i, r := range l.parsed {
+			out[i] = r.String()
+		}
+		return out
+	}
 	return slices.Clone(l.rules)
 }
 
@@ -75,9 +142,26 @@ func (l *Live) Update(rules []string) error {
 	rules = slices.Clone(rules)
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	m, err := l.compiler.Compile(rules)
-	l.rules, l.err, l.tried = rules, err, nil
+	l.rules, l.parsed, l.byRule = rules, nil, false
+	return l.recompileLocked()
+}
+
+// UpdateRules is Update for parsed or built rules, which it compiles as
+// Compiler.CompileRules does.
+func (l *Live) UpdateRules(rules []Rule) error {
+	rules = cloneRules(rules)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.rules, l.parsed, l.byRule = nil, rules, true
+	return l.recompileLocked()
+}
+
+func (l *Live) recompileLocked() error {
+	gen := l.generation()
+	m, err := l.compile()
+	l.err, l.tried = err, nil
 	l.cur.Store(m)
+	l.seen.Store(l.seenAfter(gen))
 	return err
 }
 
@@ -94,6 +178,9 @@ func (l *Live) Update(rules []string) error {
 func (l *Live) Refresh() (bool, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	// The generation before the check: a change after it grows it again.
+	gen := l.generation()
+	defer func() { l.seen.Store(l.seenAfter(gen)) }()
 	check := l.cur.Load()
 	if l.tried != nil {
 		check = l.tried
@@ -101,7 +188,7 @@ func (l *Live) Refresh() (bool, error) {
 	if !check.Stale() {
 		return false, nil
 	}
-	m, err := l.compiler.Compile(l.rules)
+	m, err := l.compile()
 	if newGeoFailure(err, l.err) {
 		l.tried = &Matcher{geo: m.geo, cfgGen: m.cfgGen, sources: m.sources} // not its rules
 		return false, err

@@ -102,6 +102,15 @@ func (m *Matcher) Stale() bool {
 	return false
 }
 
+// missingSource reports whether a geodata file of m did not exist, or could
+// not be read for the built-in private ranges.
+func (m *Matcher) missingSource() bool {
+	if m == nil {
+		return false
+	}
+	return slices.ContainsFunc(m.sources, func(s source) bool { return s.info == nil || s.fallback })
+}
+
 // Sources returns the geodata files that m was compiled from, in the order
 // its rules first read them, for example to log which version of the data
 // is in use.

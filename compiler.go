@@ -25,10 +25,11 @@ type Compiler struct {
 	GeoData *GeoData
 	// PlainDomain is the kind of a domain written without a kind, such as
 	// example.com: RuleKeyword, the zero value, matches hosts containing
-	// it, as V2Ray reads it; RuleDomain matches it and its subdomains; and
-	// RuleFull matches it exactly. With RuleDomain or RuleFull, a leading
-	// dot, as in .example.com, means the subdomains only. Rule.UnmarshalText
-	// and the package's functions read it as RuleKeyword.
+	// it, as rule lists usually mean it; RuleDomain matches it and its
+	// subdomains; and RuleFull matches it exactly. With RuleDomain or
+	// RuleFull, a leading dot, as in .example.com, means the subdomains
+	// only. Rule.UnmarshalText and the package's functions read it as
+	// RuleKeyword.
 	PlainDomain RuleKind
 	// Kinds are the rule kinds allowed; the zero KindSet allows all. Other
 	// rules fail with a *KindError, which is an ErrKindDisabled.

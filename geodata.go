@@ -71,6 +71,8 @@ type GeoData struct {
 	missing    map[string]bool      // files that did not exist, for Check
 	siteCombos weakCache[domainSet] // merged entries by comboKey
 	ipCombos   weakCache[ipSet]
+
+	lives liveList // the Lives compiled with the GeoData, for RefreshLives
 }
 
 // GeoFiles are the files of a GeoData.
@@ -125,8 +127,8 @@ func (g *GeoData) SetFiles(files GeoFiles) {
 
 // Generation returns a number that grows whenever g sees its files change:
 // SetFiles, a file indexed again because it changed, and changes that Check
-// finds. A program with many Lives can call Check now and then, and Refresh
-// them only when the generation grew.
+// finds. RefreshLives uses it to refresh only the Lives whose files may have
+// changed.
 func (g *GeoData) Generation() uint64 {
 	if g == nil {
 		return 0
@@ -426,6 +428,9 @@ func (g *GeoData) compiled(v view, name, code string, attrs []string, kind int) 
 		src = &source{fsys: v.cfg.FS, name: name, info: info}
 	}
 	if err != nil && kind == kindIP && code == "PRIVATE" {
+		if src != nil {
+			src.fallback = true
+		}
 		return builtinPrivate(), nil, src, nil
 	}
 	return geo, site, src, err
@@ -705,6 +710,9 @@ type source struct {
 	fsys fs.FS
 	name string
 	info fs.FileInfo
+	// fallback marks a file whose entry could not be read, for which the
+	// built-in private ranges stand in.
+	fallback bool
 }
 
 // export returns s as a Source.

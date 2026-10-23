@@ -98,6 +98,11 @@ if d := denylist.DecideNetAddr(conn.RemoteAddr()); !d.Allowed {
 | both, `AllowFirst`        | allowed       | denied       | allowed | allowed    |
 | neither (zero `Policy`)   |               |              |         | allowed    |
 
+`Allow` and `Deny` take any `MatcherSource`: a `*Matcher`, a `*Live`, or a
+type of your own whose `Matcher` method returns the current rules, such as a
+set of addresses that clients register at run time, rebuilt with
+`CompileRules` when it changes.
+
 `HasIPRules` and `HasDomainRules`, on a `Policy`, `Levels` or `Matcher`,
 tell whether rules of that kind exist, so that a program resolves a host's
 address for `AllowsHostIP` only when an IP rule could change the answer:
@@ -212,10 +217,9 @@ from changed or appeared, and `Matcher.Sources` lists those files.
 `GeoData.SetFiles` changes the files while the program runs, such as when
 configuration is reloaded; Matchers of the old files then report `Stale`.
 `GeoData.Check` looks at every file it has read and returns a generation
-that grows when one changed, so a program with many `Live`s refreshes them
-only when it grew. `GeoData.LoadIP`, `LoadSite`, `IPCodes` and `SiteCodes`
-read the files directly, for example to list the categories a geosite file
-offers.
+that grows when one changed. `GeoData.LoadIP`, `LoadSite`, `IPCodes` and
+`SiteCodes` read the files directly, for example to list the categories a
+geosite file offers.
 
 ### Updating geodata while running
 
@@ -233,16 +237,30 @@ go live.Watch(ctx, time.Minute, func(replaced bool, err error) {
 live.Matcher().Match(addr)
 
 // A Policy over a Live follows its Matcher by itself.
-p := geomatch.Policy{Mode: geomatch.ModeAllowlist, Matcher: live}
+p := geomatch.ModeAllowlist.Policy(live)
 p.Allows(addr)
 ```
 
 `Refresh` checks once, for programs that know when files change, and
-`Update` replaces the rules. If new geodata breaks a rule that compiled
-before, such as a file removed or replaced by a broken one, `Live` keeps the
-previous `Matcher` and reports the error, and tries again once the files
-change. Replace a file by renaming a new one over it rather than writing it in
-place, so that no compile reads it half written.
+`Update` replaces the rules; `NewLiveRules` and `UpdateRules` take parsed
+rules. A program with many `Live`s on one `GeoData`, such as one for each
+user, refreshes them all with one goroutine, which looks at each file once
+per round and recompiles only the `Live`s whose files changed; a `Live` the
+program drops leaves it by itself:
+
+```go
+go geo.WatchLives(ctx, time.Minute, func(l *geomatch.Live, replaced bool, err error) {
+	if err != nil {
+		log.Printf("geodata: %v", err)
+	}
+})
+```
+
+If new geodata breaks a rule that compiled before, such as a file removed or
+replaced by a broken one, `Live` keeps the previous `Matcher` and reports the
+error, and tries again once the files change. Replace a file by renaming a
+new one over it rather than writing it in place, so that no compile reads it
+half written.
 
 ### Restricting rules
 
@@ -279,8 +297,10 @@ read and the kinds allowed, and says so: `keyword rules are not allowed here
 (allowed: ip, geoip)`.
 
 A domain written without a kind, such as `example.com`, matches hosts that
-contain it, as V2Ray reads it. That is the widest reading, so `PlainDomain`
-can make it `domain:` (the domain and its subdomains) or `full:` instead:
+contain it, as rule lists usually mean it. That is the widest reading, so
+`PlainDomain` can make it `domain:` (the domain and its subdomains) or
+`full:` instead. Note that `*example.com` is `domain:example.com`, the domain
+and its subdomains, not any name that ends in the text:
 
 ```go
 users.PlainDomain = geomatch.RuleDomain // "example.com" is domain:example.com

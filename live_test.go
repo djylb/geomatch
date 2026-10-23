@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -217,5 +218,156 @@ func TestPolicyFollowsLive(t *testing.T) {
 	}
 	if allow.Allows("1.2.3.4") || mode.Allows("1.2.3.4") || !allow.Allows("7.7.7.7") || !mode.Allows("7.7.7.7") {
 		t.Error("Live with rules")
+	}
+}
+
+// TestRefreshLives checks that a GeoData refreshes the Lives compiled with it
+// when their files change, and only then.
+func TestRefreshLives(t *testing.T) {
+	geo := testGeoData(t)
+	// The Lives are dropped when the function returns.
+	func() {
+		c := Compiler{GeoData: geo}
+		ips := make([]*Live, 3)
+		for i := range ips {
+			var err error
+			if ips[i], err = NewLive(c, []string{"geoip:cn"}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		sites, err := NewLive(c, []string{"geosite:google"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n := geo.RefreshLives(nil); n != 0 {
+			t.Fatalf("RefreshLives without change replaced %d", n)
+		}
+
+		replaceFile(t, geo.Files().IP, encodeDat(datEntry{code: "CN", cidrs: []string{"7.7.7.0/24"}}))
+		var reported []*Live
+		if n := geo.RefreshLives(func(l *Live, replaced bool, err error) {
+			if !replaced || err != nil {
+				t.Errorf("report %v, %v", replaced, err)
+			}
+			reported = append(reported, l)
+		}); n != 3 || len(reported) != 3 {
+			t.Fatalf("RefreshLives replaced %d, reported %d; want the 3 geoip Lives", n, len(reported))
+		}
+		for _, l := range ips {
+			if !l.Matcher().Match("7.7.7.7") {
+				t.Fatal("geoip Live not refreshed")
+			}
+		}
+		if !sites.Matcher().Match("google.com") {
+			t.Fatal("geosite Live changed")
+		}
+		if n := geo.RefreshLives(nil); n != 0 {
+			t.Fatalf("second RefreshLives replaced %d", n)
+		}
+
+	}()
+
+	// Lives that the program dropped leave the list.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		runtime.GC()
+		geo.RefreshLives(nil)
+		geo.lives.mu.Lock()
+		n := len(geo.lives.lives)
+		geo.lives.mu.Unlock()
+		if n == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d Lives kept after the program dropped them", n)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestLiveRules checks Lives of parsed rules.
+func TestLiveRules(t *testing.T) {
+	geo := testGeoData(t)
+	rules, err := ParseRules([]string{"geoip:cn", "DOMAIN:Example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := NewLiveRules(Compiler{GeoData: geo}, rules)
+	if err != nil || !l.Matcher().Match("1.2.3.4") || !l.Matcher().Match("www.example.com") {
+		t.Fatalf("NewLiveRules = %v", err)
+	}
+	rules[1].Value = "changed.test" // the Live keeps its own copy
+	if got := l.Rules(); len(got) != 2 || got[1] != "domain:example.com" {
+		t.Fatalf("Rules = %q", got)
+	}
+	replaceFile(t, geo.Files().IP, encodeDat(datEntry{code: "CN", cidrs: []string{"7.7.7.0/24"}}))
+	if replaced, err := l.Refresh(); !replaced || err != nil || !l.Matcher().Match("7.7.7.7") {
+		t.Fatalf("Refresh = %v, %v", replaced, err)
+	}
+	if err := l.UpdateRules([]Rule{{Kind: RuleFull, Value: "only.test"}}); err != nil || !l.Matcher().Match("only.test") || l.Matcher().Match("7.7.7.7") {
+		t.Fatalf("UpdateRules = %v", err)
+	}
+	if err := l.Update([]string{"10.0.0.0/8"}); err != nil || !l.Matcher().Match("10.1.1.1") || l.Rules()[0] != "10.0.0.0/8" {
+		t.Fatalf("Update after UpdateRules = %v, %q", err, l.Rules())
+	}
+}
+
+// TestRefreshLivesSeesFixedFiles checks that RefreshLives refreshes a Live
+// whose file was broken or missing once the file is fixed, which the
+// generation of the GeoData may not show.
+func TestRefreshLivesSeesFixedFiles(t *testing.T) {
+	geo := testGeoData(t)
+	l, err := NewLive(Compiler{GeoData: geo}, []string{"geoip:cn"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Broken, then fixed.
+	replaceFile(t, geo.Files().IP, []byte{0x0a, 0x10, 1})
+	geo.RefreshLives(nil)
+	replaceFile(t, geo.Files().IP, encodeDat(datEntry{code: "CN", cidrs: []string{"7.7.7.0/24"}}))
+	for range 3 {
+		geo.RefreshLives(nil)
+	}
+	if !l.Matcher().Match("7.7.7.7") {
+		t.Fatal("Live not refreshed after its broken file was fixed")
+	}
+
+	// Broken at the start.
+	dir := t.TempDir()
+	name := filepath.Join(dir, "late.dat")
+	if err := os.WriteFile(name, []byte{0x0a, 0x10, 1}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	geo2 := NewGeoData(GeoFiles{IP: name})
+	late, err := NewLive(Compiler{GeoData: geo2}, []string{"geoip:cn"})
+	if err == nil {
+		t.Fatal("broken file compiled")
+	}
+	geo2.RefreshLives(nil)
+	replaceFile(t, name, encodeDat(datEntry{code: "CN", cidrs: []string{"8.8.8.0/24"}}))
+	geo2.RefreshLives(nil)
+	if !late.Matcher().Match("8.8.8.8") {
+		t.Fatal("Live with a file broken at the start not refreshed once fixed")
+	}
+}
+
+// TestRefreshLivesSeesFixedPrivate checks a geoip:private rule whose file is
+// broken at the start, for which the built-in ranges stand in, once the file
+// is fixed.
+func TestRefreshLivesSeesFixedPrivate(t *testing.T) {
+	name := filepath.Join(t.TempDir(), "ip.dat")
+	if err := os.WriteFile(name, []byte{0x0a, 0xff}, 0o600); err != nil { // cannot be indexed
+		t.Fatal(err)
+	}
+	geo := NewGeoData(GeoFiles{IP: name})
+	l, err := NewLive(Compiler{GeoData: geo}, []string{"geoip:private"})
+	if err != nil || !l.Matcher().Match("10.1.1.1") {
+		t.Fatalf("built-in private ranges: %v", err)
+	}
+	geo.RefreshLives(nil)
+	replaceFile(t, name, encodeDat(datEntry{code: "PRIVATE", cidrs: []string{"9.9.9.0/24"}}))
+	geo.RefreshLives(nil)
+	if m := l.Matcher(); !m.Match("9.9.9.9") || m.Match("10.1.1.1") {
+		t.Fatal("Live not refreshed once the private entry's file was fixed")
 	}
 }
