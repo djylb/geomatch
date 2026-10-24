@@ -72,7 +72,7 @@ func punycode(label string) (string, bool) {
 	}
 	n, delta, bias := rune(punyInitialN), 0, punyInitialBias
 	for handled < len(runes) {
-		next := rune(utf8.MaxRune + 1)
+		next := utf8.MaxRune + 1
 		for _, r := range runes {
 			if r >= n && r < next {
 				next = r

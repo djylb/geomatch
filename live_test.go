@@ -334,8 +334,8 @@ func TestRefreshLivesSeesFixedFiles(t *testing.T) {
 	}
 	geo2 := NewGeoData(GeoFiles{IP: name})
 	late, err := NewLive(Compiler{GeoData: geo2}, []string{"geoip:cn"})
-	if err == nil {
-		t.Fatal("broken file compiled")
+	if err == nil || late == nil {
+		t.Fatalf("NewLive of a broken file = %v, %v; want a Live and an error", late, err)
 	}
 	geo2.RefreshLives()
 	replaceFile(t, name, encodeDat(datEntry{code: "CN", cidrs: []string{"8.8.8.0/24"}}))

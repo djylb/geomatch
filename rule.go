@@ -312,6 +312,8 @@ func (r Rule) String() string {
 			return r.Value
 		case RuleSubdomain:
 			return "." + r.Value
+		case RuleIP, RuleGeoIP, RuleRegexp, RuleDotless, RuleGeoSite, RuleExt:
+			// Never plain: written with their kind below.
 		}
 	}
 	switch r.Kind {
