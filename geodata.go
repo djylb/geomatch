@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"net/netip"
 	"os"
 	"path"
@@ -33,7 +34,9 @@ const (
 type Domain struct {
 	Type DomainType
 	// Value is lowercase, except for regular expressions, which match
-	// regardless of case.
+	// regardless of case. The names of DomainRoot and DomainFull entries are
+	// in the form that hosts match in: without a trailing dot, and with
+	// internationalized labels in their xn-- form.
 	Value string
 	// Attrs are the lowercase attribute keys, such as "cn" or "ads", that
 	// geosite:code@attr rules select by.
@@ -121,8 +124,7 @@ func (g *GeoData) SetFiles(files GeoFiles) {
 	defer g.mu.Unlock()
 	g.cfg = files.trimmed()
 	g.cfgGen++
-	g.gen++
-	g.files, g.missing, g.siteCombos, g.ipCombos = nil, nil, nil, nil
+	g.resetLocked()
 }
 
 // Generation returns a number that grows whenever g sees its files change:
@@ -162,13 +164,13 @@ func (g *GeoData) Check() uint64 {
 
 	var changed []seen
 	for _, s := range files {
-		if fi, err := v.stat(s.name); err != nil || !sameVersion(s.f.info, fi) {
+		if fileChanged(v.cfg.FS, s.name, s.f.info) {
 			changed = append(changed, s)
 		}
 	}
 	var appeared []string
 	for _, name := range missing {
-		if _, err := v.stat(name); err == nil {
+		if fileChanged(v.cfg.FS, name, nil) {
 			appeared = append(appeared, name)
 		}
 	}
@@ -238,8 +240,8 @@ const (
 // the built-in private and special-use ranges when the file lacks it or
 // cannot be read.
 func (g *GeoData) LoadIP(file, code string) (GeoIP, error) {
-	geo, _, _, err := g.load(file, func(f GeoFiles) string { return f.IP }, code, kindIP)
-	if err != nil && strings.EqualFold(strings.TrimSpace(code), "private") {
+	geo, _, err := g.load(file, code, kindIP)
+	if privateFallback(kindIP, code, err) {
 		return GeoIP{Prefixes: slices.Clone(privatePrefixes)}, nil
 	}
 	return geo, prefixed(err)
@@ -249,21 +251,21 @@ func (g *GeoData) LoadIP(file, code string) (GeoIP, error) {
 // named file as an ext-domain: rule names it, or of the site file when file
 // is empty.
 func (g *GeoData) LoadSite(file, code string) ([]Domain, error) {
-	_, domains, _, err := g.load(file, func(f GeoFiles) string { return f.Site }, code, kindSite)
+	_, domains, err := g.load(file, code, kindSite)
 	return domains, prefixed(err)
 }
 
 // IPCodes returns the codes of the geoip file named file as an ext-ip: rule
 // names it, or of the IP file when file is empty, sorted and upper-case.
 func (g *GeoData) IPCodes(file string) ([]string, error) {
-	return g.codes(file, func(f GeoFiles) string { return f.IP }, kindIP)
+	return g.codes(file, kindIP)
 }
 
 // SiteCodes returns the codes of the geosite file named file as an
 // ext-domain: rule names it, or of the site file when file is empty, sorted
 // and upper-case: the categories that geosite: rules can name.
 func (g *GeoData) SiteCodes(file string) ([]string, error) {
-	return g.codes(file, func(f GeoFiles) string { return f.Site }, kindSite)
+	return g.codes(file, kindSite)
 }
 
 // SiteAttrs returns the attributes that the domains of the entry for code of
@@ -286,18 +288,17 @@ func (g *GeoData) SiteAttrs(file, code string) ([]string, error) {
 	return attrs, nil
 }
 
-func (g *GeoData) codes(file string, def func(GeoFiles) string, kind int) ([]string, error) {
-	codes, err := g.codesLocked(file, def, kind)
-	return codes, prefixed(err)
+// isPrivate reports whether code, case-insensitive, is PRIVATE, for which
+// the built-in private and special-use ranges stand in.
+func isPrivate(code string) bool {
+	return strings.EqualFold(strings.TrimSpace(code), "private")
 }
 
-// fileName returns the file named file as an ext: rule of kind names it,
-// or the default file of def for "".
-func (v view) fileName(file string, def func(GeoFiles) string, kind int) (string, error) {
-	if file = strings.TrimSpace(file); file == "" {
-		return def(v.cfg), nil
-	}
-	return v.extPath(file, kind)
+// privateFallback reports whether the built-in private ranges stand in for
+// the entry for code that a geoip rule, or LoadIP, of kind failed to read
+// with err: the PRIVATE code of a geoip file that lacks it or cannot be read.
+func privateFallback(kind int, code string, err error) bool {
+	return err != nil && kind == kindIP && isPrivate(code)
 }
 
 // prefixed returns err, if any, with the package name, as an error of the
@@ -309,32 +310,65 @@ func prefixed(err error) error {
 	return fmt.Errorf("geomatch: %w", err)
 }
 
-func (g *GeoData) codesLocked(file string, def func(GeoFiles) string, kind int) ([]string, error) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
+// defaultFile returns the default file of kind: IP or Site, or none for an
+// ext: rule.
+func (f GeoFiles) defaultFile(kind int) string {
+	switch kind {
+	case kindIP:
+		return f.IP
+	case kindSite:
+		return f.Site
+	default:
+		return ""
+	}
+}
+
+// fileName returns the file named file as an ext: rule of kind names it,
+// or the default file of kind for "".
+func (v view) fileName(file string, kind int) (string, error) {
+	if file = strings.TrimSpace(file); file == "" {
+		return v.cfg.defaultFile(kind), nil
+	}
+	return v.extPath(file, kind)
+}
+
+// openNamedLocked opens the file named file, as fileName reads it, of the
+// current files, and returns its name and index, and the open handle, which
+// the caller closes.
+func (g *GeoData) openNamedLocked(file string, kind int) (string, *datFile, geoFile, error) {
 	v := g.viewLocked()
-	name, err := v.fileName(file, def, kind)
+	name, err := v.fileName(file, kind)
 	if err != nil {
-		return nil, err
+		return "", nil, nil, err
 	}
 	f, handle, _, err := g.openLocked(v, name)
+	return name, f, handle, err
+}
+
+func (g *GeoData) codes(file string, kind int) ([]string, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	_, f, handle, err := g.openNamedLocked(file, kind)
 	if err != nil {
-		return nil, err
+		return nil, prefixed(err)
 	}
 	_ = handle.Close()
-	codes := make([]string, 0, len(f.index))
-	for code := range f.index {
-		codes = append(codes, code)
-	}
-	slices.Sort(codes)
-	return codes, nil
+	return slices.Sorted(maps.Keys(f.index)), nil
 }
 
 // Reset drops the indexes and compiled entries; Matchers already compiled
-// keep theirs.
+// keep theirs, and RefreshLives checks every Live again.
 func (g *GeoData) Reset() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	g.resetLocked()
+}
+
+// resetLocked drops the indexes and compiled entries, and counts a
+// generation: without the indexes, Check no longer sees the files that Lives
+// were compiled from, so each Live must check its own.
+func (g *GeoData) resetLocked() {
+	g.gen++
 	g.files, g.missing, g.siteCombos, g.ipCombos = nil, nil, nil, nil
 }
 
@@ -375,58 +409,40 @@ func (v view) extDir(dir func(string) string, kind int) string {
 	}
 }
 
-// load returns the entry for code of the file name, decoded as kind, and
-// reports whether it is a geoip entry.
-func (g *GeoData) load(file string, def func(GeoFiles) string, code string, kind int) (geo GeoIP, domains []Domain, isIP bool, err error) {
+// load returns the entry for code of the file named file, as fileName reads
+// it, decoded as kind.
+func (g *GeoData) load(file, code string, kind int) (GeoIP, []Domain, error) {
 	code = upperASCII(strings.TrimSpace(code))
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	v := g.viewLocked()
-	name, err := v.fileName(file, def, kind)
+	name, f, handle, err := g.openNamedLocked(file, kind)
 	if err != nil {
-		return GeoIP{}, nil, false, err
-	}
-	f, handle, _, err := g.openLocked(v, name)
-	if err != nil {
-		return GeoIP{}, nil, false, err
+		return GeoIP{}, nil, err
 	}
 	defer func() { _ = handle.Close() }()
-	rec, err := f.read(handle, name, code)
+	isIP, rec, err := f.entryKind(handle, name, code, kind)
 	if err != nil {
-		return GeoIP{}, nil, false, err
+		return GeoIP{}, nil, err
 	}
-	if isIP, err = resolveKind(name, code, recordKind(rec), kind); err != nil {
-		return GeoIP{}, nil, false, err
-	}
-	geo, domains, err = decodeRecord(name, code, rec, isIP)
-	return geo, domains, isIP, err
+	return f.readEntry(handle, name, code, isIP, rec)
 }
 
 // compiledRule returns the compiled geo entry of a RuleGeoIP, RuleGeoSite or
 // RuleExt rule, from the cache when another rule used it.
 func (g *GeoData) compiledRule(v view, r Rule) (*geoIPSet, *domainSet, *source, error) {
-	kind, name := kindAny, ""
+	kind := kindAny
 	switch r.Kind {
 	case RuleGeoIP:
-		kind, name = kindIP, v.cfg.IP
+		kind = kindIP
 	case RuleGeoSite:
-		kind, name = kindSite, v.cfg.Site
+		kind = kindSite
 	case RuleExt:
 	case RuleIP, RuleFull, RuleDomain, RuleSubdomain, RuleKeyword, RuleRegexp, RuleDotless:
 		return nil, nil, nil, fmt.Errorf("%v reads no geodata", r)
 	default:
 		return nil, nil, nil, fmt.Errorf("unknown rule kind %d", r.Kind)
 	}
-	if r.File != "" {
-		var err error
-		if name, err = v.extPath(r.File, kind); err != nil {
-			if kind == kindIP && upperASCII(r.Code) == "PRIVATE" {
-				return builtinPrivate(), nil, nil, nil
-			}
-			return nil, nil, nil, err
-		}
-	}
-	geo, site, src, err := g.compiled(v, name, r.Code, r.Attrs, kind)
+	geo, site, src, err := g.compiled(v, r.File, r.Code, r.Attrs, kind)
 	switch {
 	case err != nil:
 		return nil, nil, src, err
@@ -438,24 +454,31 @@ func (g *GeoData) compiledRule(v view, r Rule) (*geoIPSet, *domainSet, *source, 
 	return geo, site, src, nil
 }
 
-// compiled returns code of the file name compiled for rules, as kind,
-// from the cache when another rule used it: a geoip entry, or a geosite
-// entry restricted to the domains having every attribute in attrs, which are
-// sorted. The code PRIVATE of a geoip file falls back to the built-in ranges.
+// compiled returns code of the file named file, as fileName reads it,
+// compiled for rules, as kind, from the cache when another rule used it: a
+// geoip entry, or a geosite entry restricted to the domains having every
+// attribute in attrs, which are sorted. The code PRIVATE of a geoip file
+// falls back to the built-in ranges.
 //
 // It also returns the file it read, for Matcher.Stale: with the version it
 // read, or without one if the file did not exist.
-func (g *GeoData) compiled(v view, name, code string, attrs []string, kind int) (*geoIPSet, *domainSet, *source, error) {
-	name, code = strings.TrimSpace(name), upperASCII(strings.TrimSpace(code))
+func (g *GeoData) compiled(v view, file, code string, attrs []string, kind int) (*geoIPSet, *domainSet, *source, error) {
+	code = upperASCII(strings.TrimSpace(code))
 	key := strings.Join(append([]string{code}, attrs...), "@")
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	geo, site, info, err := g.compiledLocked(v, name, code, key, attrs, kind)
+	var geo *geoIPSet
+	var site *domainSet
 	var src *source
-	if name != "" {
-		src = &source{fsys: v.cfg.FS, name: name, info: info}
+	name, err := v.fileName(file, kind)
+	if err == nil {
+		var info fs.FileInfo
+		geo, site, info, err = g.compiledLocked(v, name, code, key, attrs, kind)
+		if name != "" {
+			src = &source{fsys: v.cfg.FS, name: name, info: info}
+		}
 	}
-	if err != nil && kind == kindIP && code == "PRIVATE" {
+	if privateFallback(kind, code, err) {
 		if src != nil {
 			src.fallback = true
 		}
@@ -470,19 +493,7 @@ func (g *GeoData) compiledLocked(v view, name, code, key string, attrs []string,
 		return nil, nil, fi, err
 	}
 	defer func() { _ = handle.Close() }()
-	k, known := f.kinds[code]
-	var rec []byte
-	if !known {
-		if rec, err = f.read(handle, name, code); err != nil {
-			return nil, nil, f.info, err
-		}
-		k = recordKind(rec)
-		if f.kinds == nil {
-			f.kinds = make(map[string]recKind)
-		}
-		f.kinds[code] = k
-	}
-	isIP, err := resolveKind(name, code, k, kind)
+	isIP, rec, err := f.entryKind(handle, name, code, kind)
 	if err != nil {
 		return nil, nil, f.info, err
 	}
@@ -492,12 +503,7 @@ func (g *GeoData) compiledLocked(v view, name, code, key string, attrs []string,
 	if s := f.siteSets.get(key); s != nil && !isIP {
 		return nil, s, f.info, nil
 	}
-	if rec == nil {
-		if rec, err = f.read(handle, name, code); err != nil {
-			return nil, nil, f.info, err
-		}
-	}
-	geo, domains, err := decodeRecord(name, code, rec, isIP)
+	geo, domains, err := f.readEntry(handle, name, code, isIP, rec)
 	if err != nil {
 		return nil, nil, f.info, err
 	}
@@ -608,7 +614,7 @@ func (g *GeoData) openLocked(v view, name string) (*datFile, geoFile, fs.FileInf
 		file, err = os.Open(name)
 	}
 	if err != nil {
-		fi, _ := v.stat(name) // a file that exists but cannot be opened
+		fi, _ := statIn(v.cfg.FS, name) // a file that exists but cannot be opened
 		if fi == nil && current && len(g.missing) < maxMissing {
 			if g.missing == nil {
 				g.missing = make(map[string]bool)
@@ -661,11 +667,6 @@ func (g *GeoData) openLocked(v view, name string) (*datFile, geoFile, fs.FileInf
 		g.siteCombos, g.ipCombos = nil, nil
 	}
 	return f, handle, fi, nil
-}
-
-// stat returns the stat of the file name of v.
-func (v view) stat(name string) (fs.FileInfo, error) {
-	return statIn(v.cfg.FS, name)
 }
 
 // statIn returns the stat of the file name of fsys, or of the operating
@@ -754,9 +755,16 @@ func (s source) export() Source {
 // changed reports whether the file named by s is no longer the version
 // read, or exists after it did not.
 func (s source) changed() bool {
-	fi, err := statIn(s.fsys, s.name)
-	if s.info == nil {
+	return fileChanged(s.fsys, s.name, s.info)
+}
+
+// fileChanged reports whether the file name of fsys, or of the operating
+// system if fsys is nil, is no longer the version info, or exists when info
+// is nil, as it did not.
+func fileChanged(fsys fs.FS, name string, info fs.FileInfo) bool {
+	fi, err := statIn(fsys, name)
+	if info == nil {
 		return err == nil
 	}
-	return err != nil || !sameVersion(s.info, fi)
+	return err != nil || !sameVersion(info, fi)
 }

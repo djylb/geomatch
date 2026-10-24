@@ -63,7 +63,7 @@ func TestExplainIndexAgrees(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Compile(%q): %v", rules, err)
 		}
-		m.once.Do(m.compileProbes)
+		m.once.Do(m.buildExplain)
 		for range 50 {
 			var tg target
 			if rng.IntN(2) == 0 {

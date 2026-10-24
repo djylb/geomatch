@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
-	"regexp"
+	"regexp/syntax"
 	"slices"
 	"strconv"
 	"strings"
@@ -178,12 +178,13 @@ func parseRule(s string, plain RuleKind) (Rule, error) {
 		if !isASCII(pattern) {
 			return Rule{}, errNonASCII
 		}
-		// Checked as written first, so that errors quote the pattern
-		// without the (?i) that matching adds.
-		if _, err := regexp.Compile(pattern); err != nil {
+		// Parsed, which is all of compiling that can fail, as written
+		// first, so that errors quote the pattern without the (?i) that
+		// matching adds; the builder compiles it once.
+		if _, err := syntax.Parse(pattern, syntax.Perl); err != nil {
 			return Rule{}, err
 		}
-		if _, err := regexp.Compile("(?i)" + pattern); err != nil {
+		if _, err := syntax.Parse("(?i)"+pattern, syntax.Perl); err != nil {
 			return Rule{}, err
 		}
 		return Rule{Kind: RuleRegexp, Value: pattern}, nil
@@ -265,7 +266,7 @@ func parsePlain(s string, plain RuleKind) (Rule, error) {
 	}
 	host := HostOf(s)
 	if ip, err := netip.ParseAddr(host); err == nil {
-		ip = ip.Unmap().WithZone("")
+		ip = normalAddr(ip)
 		return Rule{Kind: RuleIP, Prefix: netip.PrefixFrom(ip, ip.BitLen())}, nil
 	}
 	// A leading dot, as in ".example.com", means the subdomains: a keyword
@@ -469,7 +470,8 @@ func domainValue(value string) (string, error) {
 	if !utf8.ValidString(value) {
 		return "", errNotHost
 	}
-	host := strings.ToLower(strings.TrimSuffix(fullWidthDots(strings.TrimSpace(value)), "."))
+	// Checked as written, before the xn-- form hides what it encodes.
+	host := foldHost(strings.TrimSpace(value))
 	switch {
 	case host == "":
 		return "", errEmptyValue
@@ -490,7 +492,7 @@ func domainValue(value string) (string, error) {
 		return "", fmt.Errorf("an IPv4 address in a legacy form, which matches as %v; write that", ip)
 	}
 	// Names travel as ASCII, as geosite files hold them: an internationalized
-	// name is written in its xn-- form to match.
+	// name matches in its xn-- form, as normalHost gives it.
 	ascii, ok := asciiHost(host)
 	if !ok {
 		return "", errNotHost

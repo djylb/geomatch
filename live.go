@@ -31,16 +31,22 @@ type Live struct {
 	rules  []string
 	parsed []Rule
 	byRule bool
-	err    error    // of the current Matcher's compile
-	tried  *Matcher // the sources of a compile that Refresh rejected, for Stale
-	failed error    // of the last Refresh, which kept the Matcher, or nil
-	tag    any      // of SetTag
+	err    error     // of the current Matcher's compile
+	tried  *snapshot // the geodata of a compile that Refresh rejected, for refresh
+	failed error     // of the last Refresh, which kept the Matcher, or nil
+	tag    any       // of SetTag
 
 	cur atomic.Pointer[Matcher]
 	// seen is the generation of the compiler's GeoData when the Live last
 	// compiled or checked its files, so that GeoData.RefreshLives skips it
 	// while no file changed.
 	seen atomic.Uint64
+}
+
+// due reports whether the files of l may have changed since it last
+// compiled or checked them, now that the GeoData is at generation gen.
+func (l *Live) due(gen uint64) bool {
+	return l.seen.Load() != gen
 }
 
 // NewLive compiles rules with c, as c.Compile does: the error lists the
@@ -88,7 +94,7 @@ const unseen = ^uint64(0)
 // was missing, since GeoData.Check may not watch such files, so that
 // RefreshLives refreshes the Live every time, as Refresh would see the fix.
 func (l *Live) seenAfter(gen uint64) uint64 {
-	if l.tried != nil || errors.Is(l.err, ErrGeoData) || l.cur.Load().missingSource() {
+	if l.tried != nil || errors.Is(l.err, ErrGeoData) || l.cur.Load().missing() {
 		return unseen
 	}
 	return gen
@@ -177,23 +183,27 @@ func (l *Live) recompileLocked() error {
 // Refresh returns false and the error of the new compile, and compiles again
 // once the files change again. Otherwise the error is that of the new
 // compile, as Err returns it, or nil.
-func (l *Live) Refresh() (bool, error) {
+func (l *Live) Refresh() (bool, error) { return l.refresh(false) }
+
+// refresh is Refresh, which with checked compares the files with the
+// versions that GeoData.Check just recorded, as snapshot.stale does.
+func (l *Live) refresh(checked bool) (bool, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	// The generation before the check: a change after it grows it again.
 	gen := l.generation()
 	defer func() { l.seen.Store(l.seenAfter(gen)) }()
-	check := l.cur.Load()
+	check := &l.cur.Load().snapshot
 	if l.tried != nil {
 		check = l.tried
 	}
-	if !check.Stale() {
+	if !check.stale(checked) {
 		return false, nil
 	}
 	m, err := l.compile()
 	if newGeoFailure(err, l.err) {
-		l.tried = &Matcher{geo: m.geo, cfgGen: m.cfgGen, sources: m.sources} // not its rules
-		l.failed = err
+		tried := m.snapshot // not the Matcher, which holds the rules
+		l.tried, l.failed = &tried, err
 		return false, err
 	}
 	l.err, l.tried, l.failed = err, nil, nil
@@ -255,8 +265,19 @@ func newGeoFailure(err, prev error) bool {
 //		}
 //	})
 func (l *Live) Watch(ctx context.Context, interval time.Duration, report func(replaced bool, err error)) error {
+	return every(ctx, interval, "Watch", func() {
+		replaced, err := l.Refresh()
+		if report != nil && (replaced || err != nil) {
+			report(replaced, err)
+		}
+	})
+}
+
+// every calls f every interval until ctx is done and returns ctx.Err(), or
+// an error at once, naming the method, if interval is not positive.
+func every(ctx context.Context, interval time.Duration, method string, f func()) error {
 	if interval <= 0 {
-		return errors.New("geomatch: Watch interval must be positive")
+		return errors.New("geomatch: " + method + " interval must be positive")
 	}
 	t := time.NewTicker(interval)
 	defer t.Stop()
@@ -265,10 +286,7 @@ func (l *Live) Watch(ctx context.Context, interval time.Duration, report func(re
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-t.C:
-			replaced, err := l.Refresh()
-			if report != nil && (replaced || err != nil) {
-				report(replaced, err)
-			}
+			f()
 		}
 	}
 }

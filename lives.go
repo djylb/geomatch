@@ -63,7 +63,9 @@ func (r RefreshResult) Changed() bool {
 // refreshes, as Live.Refresh does, every Live compiled with g whose files may
 // have changed since it last compiled or checked them, so that a program with
 // many Lives, such as one per user, checks each file once rather than once
-// per Live. Live.Tag tells the Lives of the result apart.
+// per Live: a Live compares its files with the versions that Check saw, and
+// looks again only at those that changed, did not exist or could not be
+// read. Live.Tag tells the Lives of the result apart.
 func (g *GeoData) RefreshLives() RefreshResult {
 	var res RefreshResult
 	if g == nil {
@@ -75,10 +77,10 @@ func (g *GeoData) RefreshLives() RefreshResult {
 	g.lives.mu.Unlock()
 	seen := make(map[string]bool)
 	for _, l := range lives {
-		if l.seen.Load() == gen {
+		if !l.due(gen) {
 			continue
 		}
-		switch replaced, err := l.Refresh(); {
+		switch replaced, err := l.refresh(true); {
 		case replaced:
 			res.Replaced = append(res.Replaced, l)
 		case err != nil:
@@ -118,19 +120,9 @@ func geoCauses(err error) []error {
 //		}
 //	})
 func (g *GeoData) WatchLives(ctx context.Context, interval time.Duration, report func(RefreshResult)) error {
-	if interval <= 0 {
-		return errors.New("geomatch: WatchLives interval must be positive")
-	}
-	t := time.NewTicker(interval)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-t.C:
-			if res := g.RefreshLives(); report != nil && res.Changed() {
-				report(res)
-			}
+	return every(ctx, interval, "WatchLives", func() {
+		if res := g.RefreshLives(); report != nil && res.Changed() {
+			report(res)
 		}
-	}
+	})
 }

@@ -6,8 +6,8 @@ import (
 )
 
 type builder struct {
-	geo      *GeoData
-	view     view // the files of the GeoData, read once
+	geo      *GeoData // nil until a geo rule needs one, without a GeoData
+	view     view     // the files of the GeoData, read once
 	ips      ipSetBuilder
 	geoIPs   []*ipSet
 	inverse  []*ipSet
@@ -20,14 +20,22 @@ type builder struct {
 }
 
 func newBuilder(geo *GeoData) *builder {
-	if geo == nil {
-		geo = &GeoData{}
-	}
 	return &builder{geo: geo, view: geo.view()}
 }
 
+// geoData returns the GeoData of geo rules. Without one, the builder makes
+// its own, without files, which indexes the files that ext: rules name by
+// absolute paths, and with which the Matcher reports them Stale.
+func (c *builder) geoData() *GeoData {
+	if c.geo == nil {
+		c.geo = &GeoData{}
+	}
+	return c.geo
+}
+
 func (c *builder) finish() *Matcher {
-	// Several geo entries become one set, so that a query looks once.
+	// Several geo entries become one set, so that a query looks once; they
+	// come from geo rules, which set geo.
 	if len(c.geoIPs) > 1 {
 		c.geoIPs = []*ipSet{c.geo.mergedIPs(c.geoIPs)}
 	}
@@ -41,9 +49,7 @@ func (c *builder) finish() *Matcher {
 		ipRules:  c.ipRules,
 		domRules: c.domRules,
 		probes:   c.probes,
-		geo:      c.geo,
-		cfgGen:   c.view.cfgGen,
-		sources:  c.sources,
+		snapshot: snapshot{geo: c.geo, cfgGen: c.view.cfgGen, sources: c.sources},
 	}
 	if own := c.ips.build(); own.ranges() > 0 {
 		m.ipSets = append([]*ipSet{own}, m.ipSets...)
@@ -62,7 +68,7 @@ func (c *builder) add(r Rule) error {
 		c.ips.addPrefix(r.Prefix)
 		c.ipRules++
 	case RuleGeoIP, RuleGeoSite, RuleExt:
-		geo, site, src, err := c.geo.compiledRule(c.view, r)
+		geo, site, src, err := c.geoData().compiledRule(c.view, r)
 		c.addSource(src)
 		if err != nil {
 			return withClass(err, ErrGeoData)
@@ -73,22 +79,18 @@ func (c *builder) add(r Rule) error {
 			c.addSiteSet(site)
 		}
 		p.geo, p.site = geo, site
-	case RuleFull:
-		c.domains.addName(r.Value, nameExact)
-		c.domRules++
-	case RuleDomain:
-		c.domains.addName(r.Value, nameExact|nameSub)
-		c.domRules++
-	case RuleSubdomain:
-		c.domains.addName(r.Value, nameSub)
+	case RuleFull, RuleDomain, RuleSubdomain:
+		c.domains.addName(r.Value, nameFlags(r.Kind))
 		c.domRules++
 	case RuleKeyword:
 		c.domains.addKeyword(r.Value)
 		c.domRules++
 	case RuleRegexp:
-		if err := c.domains.addRegexp(r.Value); err != nil {
+		re, err := c.domains.addRegexp(r.Value)
+		if err != nil {
 			return withClass(err, ErrInvalidRule)
 		}
+		p.re = re
 		c.domRules++
 	case RuleDotless:
 		if r.Value == "" {

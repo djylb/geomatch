@@ -3,10 +3,14 @@ package geomatch
 import (
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"net/netip"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/fstest"
+	"time"
 )
 
 // TestLegacyIPv4 checks that hosts in the legacy forms of IPv4, which system
@@ -242,5 +246,111 @@ func TestFullWidthDots(t *testing.T) {
 	}
 	if got := HostOf("\xffa.COM"); got != "" {
 		t.Errorf("HostOf of invalid UTF-8 = %q", got)
+	}
+}
+
+// TestGeoSiteInternationalized checks that the full and domain entries of a
+// geosite file written as internationalized names match, as rules and
+// queries do, in their xn-- form, while keywords stay text.
+func TestGeoSiteInternationalized(t *testing.T) {
+	dir := t.TempDir()
+	site := writeDat(t, dir, "geosite.dat", datEntry{code: "IDN", domains: []Domain{
+		{Type: DomainFull, Value: "Bücher.DE."},
+		{Type: DomainRoot, Value: "例え。テスト"},
+		{Type: DomainKeyword, Value: "Straße"},
+	}})
+	geo := NewGeoData(GeoFiles{Site: site})
+	m := mustCompile(geo, []string{"geosite:idn"})
+	for _, host := range []string{"bücher.de", "BÜCHER.de", "xn--bcher-kva.de", "例え.テスト", "www.例え。テスト", "a.xn--r8jz45g.xn--zckzah"} {
+		if !m.MatchDomain(host) {
+			t.Errorf("MatchDomain(%q) = false", host)
+		}
+	}
+	if m.MatchDomain("www.bücher.de") || m.MatchDomain("straße.de") {
+		t.Error("an entry matched more than it holds")
+	}
+	domains, err := geo.LoadSite("", "idn")
+	if err != nil || len(domains) != 3 || domains[0].Value != "xn--bcher-kva.de" || domains[1].Value != "xn--r8jz45g.xn--zckzah" || domains[2].Value != "straße" {
+		t.Fatalf("LoadSite = %+v, %v", domains, err)
+	}
+}
+
+// TestQueryAllocs checks that queries of ASCII hosts and addresses, also in
+// the legacy forms of IPv4, allocate nothing, and internationalized names
+// little.
+func TestQueryAllocs(t *testing.T) {
+	m := MustCompile([]string{"10.0.0.0/8", "domain:example.com", "keyword:ads", `regexp:^foo[0-9]+\.test$`, "geoip:private"})
+	p := Policy{Allow: m}
+	for host, most := range map[string]float64{
+		"127.1": 0, "10.1.2.3": 0, "2001:db8::1": 0, "[2001:db8::1]:443": 0, "example.com": 0,
+		"www.example.com:443": 0, "foo1.test": 0, "bücher.de": 1, "http://www.bücher.de/": 1,
+	} {
+		for name, query := range map[string]func(){
+			"Match":       func() { m.Match(host) },
+			"MatchDomain": func() { m.MatchDomain(host) },
+			"Find":        func() { m.Find(host) },
+			"Allows":      func() { p.Allows(host) },
+			"Decide":      func() { p.Decide(host) },
+		} {
+			if n := testing.AllocsPerRun(100, query); n > most {
+				t.Errorf("%s(%q) allocates %v times, want at most %v", name, host, n, most)
+			}
+		}
+	}
+}
+
+// TestRegexpCompiledOnce checks that the probe of a regexp: rule, which Find
+// tries, shares the expression compiled for matching.
+func TestRegexpCompiledOnce(t *testing.T) {
+	m := MustCompile([]string{`regexp:^a+\.test$`})
+	if re := m.probes[0].re; re == nil || len(m.domSets) != 1 || m.domSets[0].regexps[0] != re {
+		t.Fatal("the probe compiled its own expression")
+	}
+	if r, ok := m.Find("aaa.test"); !ok || r.Kind != RuleRegexp {
+		t.Fatalf("Find = %v, %v", r, ok)
+	}
+}
+
+// statCounter is an fs.FS that counts the calls of Stat.
+type statCounter struct {
+	fstest.MapFS
+	stats atomic.Int64
+}
+
+func (c *statCounter) Stat(name string) (fs.FileInfo, error) {
+	c.stats.Add(1)
+	return c.MapFS.Stat(name)
+}
+
+// TestRefreshLivesChecksOnce checks that RefreshLives looks at each file
+// once, as Check does, rather than once for every Live of the file, but for
+// the file that changed.
+func TestRefreshLivesChecksOnce(t *testing.T) {
+	fsys := &statCounter{MapFS: fstest.MapFS{
+		"geoip.dat":   {Data: encodeDat(datEntry{code: "CN", cidrs: []string{"1.2.3.0/24"}})},
+		"geosite.dat": {Data: encodeDat(datEntry{code: "CN", domains: []Domain{{Type: DomainRoot, Value: "qq.com"}}})},
+	}}
+	geo := NewGeoData(GeoFiles{IP: "geoip.dat", Site: "geosite.dat", FS: fsys})
+	var lives []*Live
+	for _, rules := range [][]string{{"geoip:cn"}, {"geosite:cn"}} {
+		for range 10 {
+			l, err := NewLive(Compiler{GeoData: geo}, rules)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lives = append(lives, l)
+		}
+	}
+	fsys.MapFS["geoip.dat"] = &fstest.MapFile{Data: encodeDat(datEntry{code: "CN", cidrs: []string{"7.7.7.0/24"}}), ModTime: time.Unix(1, 0)}
+	fsys.stats.Store(0)
+	if r := geo.RefreshLives(); len(r.Replaced) != 10 {
+		t.Fatalf("RefreshLives replaced %d Lives, want the 10 of geoip:cn", len(r.Replaced))
+	}
+	// Check looks at both files, and the first Live at the changed one.
+	if n := fsys.stats.Load(); n > 3 {
+		t.Errorf("RefreshLives looked at the files %d times, want at most 3", n)
+	}
+	if !lives[0].Matcher().Match("7.7.7.7") || !lives[10].Matcher().Match("qq.com") {
+		t.Error("Lives do not follow the files")
 	}
 }

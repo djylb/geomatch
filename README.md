@@ -79,13 +79,13 @@ if either the name or the address does, so that an allowlist of `geoip:`
 rules allows a host by where it resolves. `HostOf` extracts the host that
 `Match` uses from an address or URL, ending it at a backslash as browsers do.
 Names are matched in their ASCII form, as TLS, DNS and geosite files hold
-them: internationalized names in queries, and in the domains of `full:`,
-`domain:` and `*` rules, are converted to their `xn--` form, with full-width
-dots read as dots; `keyword:`, `regexp:` and `dotless:` rules are text that
-must be ASCII. A host in the legacy forms of IPv4 that system
-resolvers accept, such as `127.1`, `2130706433` or `0x7f.0.0.1`, is matched
-as the address it stands for, so that a denylist of addresses cannot be
-passed by spelling one differently.
+them: internationalized names in queries, in the domains of `full:`, `domain:`
+and `*` rules, and in the full and domain entries of geosite files, are
+converted to their `xn--` form, with full-width dots read as dots; `keyword:`,
+`regexp:` and `dotless:` rules are text that must be ASCII. A host in the
+legacy forms of IPv4 that system resolvers accept, such as `127.1`,
+`2130706433` or `0x7f.0.0.1`, is matched as the address it stands for, so that
+a denylist of addresses cannot be passed by spelling one differently.
 
 ### Allowing and denying
 

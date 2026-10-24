@@ -49,13 +49,14 @@ func newExplainIndex(probes []probe) *explainIndex {
 				}
 				x.lengths[fam][p.Bits()/64] |= 1 << (p.Bits() % 64)
 			}
-		case RuleFull:
-			first(x.exact, r.Value, i)
-		case RuleDomain:
-			first(x.exact, r.Value, i)
-			first(x.sub, r.Value, i)
-		case RuleSubdomain:
-			first(x.sub, r.Value, i)
+		case RuleFull, RuleDomain, RuleSubdomain:
+			flags := nameFlags(r.Kind)
+			if flags&nameExact != 0 {
+				first(x.exact, r.Value, i)
+			}
+			if flags&nameSub != 0 {
+				first(x.sub, r.Value, i)
+			}
 		case RuleKeyword:
 			keywords = append(keywords, r.Value)
 			x.keywordRules = append(x.keywordRules, i)

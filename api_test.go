@@ -95,13 +95,19 @@ func TestModeText(t *testing.T) {
 		"off": ModeOff, "": ModeOff, " NONE ": ModeOff, "0": ModeOff, "disabled": ModeOff,
 		"allowlist": ModeAllowlist, "Whitelist": ModeAllowlist, "allow": ModeAllowlist, "1": ModeAllowlist,
 		"denylist": ModeDenylist, "BLACKLIST": ModeDenylist, "blocklist": ModeDenylist, "deny": ModeDenylist, "2": ModeDenylist,
+		"allow-list": ModeAllowlist, "Deny_List": ModeDenylist, "block-list": ModeDenylist,
 	} {
 		if got, err := ParseMode(in); err != nil || got != want {
 			t.Errorf("ParseMode(%q) = %v, %v; want %v", in, got, err, want)
 		}
 	}
-	if _, err := ParseMode("maybe"); err == nil {
-		t.Error("ParseMode accepted an unknown mode")
+	for _, in := range []string{"maybe", "-1", "-", "_2"} {
+		if _, err := ParseMode(in); err == nil {
+			t.Errorf("ParseMode accepted %q", in)
+		}
+		if _, err := ParsePriority(in); err == nil {
+			t.Errorf("ParsePriority accepted %q", in)
+		}
 	}
 	var cfg struct{ Mode Mode }
 	if err := json.Unmarshal([]byte(`{"Mode":"whitelist"}`), &cfg); err != nil || cfg.Mode != ModeAllowlist {

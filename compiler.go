@@ -240,34 +240,32 @@ func (c Compiler) Normalize(rules []string) ([]string, error) {
 
 // Compile is the package's Compile with the settings of c.
 func (c Compiler) Compile(rules []string) (*Matcher, error) {
-	b := newBuilder(c.GeoData)
-	rd := c.reader(b.view)
-	var errs RuleErrors
-	for i, s := range rules {
-		r, err := rd.read(s)
-		if errors.Is(err, errNoRule) {
-			continue
-		}
-		if err == nil {
-			err = b.add(r)
-		}
-		if err != nil {
-			errs = append(errs, &RuleError{Index: i, Rule: trimRule(s), Err: err})
-		}
-	}
-	return b.finish(), errs.err()
+	return c.compile(len(rules), func(i int) string { return rules[i] }, false)
 }
 
 // CompileRules is the package's CompileRules with the settings of c.
 func (c Compiler) CompileRules(rules []Rule) (*Matcher, error) {
+	return c.compile(len(rules), func(i int) string { return rules[i].String() }, true)
+}
+
+// compile compiles n rules, rule i written as text(i). Empty rules and
+// comments are skipped as written text, but are errors for parsed rules,
+// whose errors quote them as String writes them.
+func (c Compiler) compile(n int, text func(int) string, parsed bool) (*Matcher, error) {
 	b := newBuilder(c.GeoData)
 	rd := c.reader(b.view)
 	var errs RuleErrors
-	for i, r := range rules {
-		s := r.String()
-		n, err := rd.read(s)
+	for i := range n {
+		s := text(i)
+		r, err := rd.read(s)
+		if !parsed {
+			if errors.Is(err, errNoRule) {
+				continue
+			}
+			s = trimRule(s)
+		}
 		if err == nil {
-			err = b.add(n)
+			err = b.add(r)
 		}
 		if err != nil {
 			errs = append(errs, &RuleError{Index: i, Rule: s, Err: err})
@@ -280,10 +278,22 @@ func (c Compiler) CompileRules(rules []Rule) (*Matcher, error) {
 type ruleReader struct {
 	c              *Compiler
 	view           view
+	plain          RuleKind // the kind of plain domains
+	plainErr       error    // of an invalid Compiler.PlainDomain
 	rules, regexps int
 }
 
-func (c Compiler) reader(v view) *ruleReader { return &ruleReader{c: &c, view: v} }
+func (c Compiler) reader(v view) *ruleReader {
+	rd := &ruleReader{c: &c, view: v, plain: c.PlainDomain}
+	switch rd.plain {
+	case 0:
+		rd.plain = RuleKeyword
+	case RuleKeyword, RuleDomain, RuleFull:
+	default:
+		rd.plainErr = fmt.Errorf("%w: Compiler.PlainDomain is %v, not keyword, domain or full", ErrInvalidRule, rd.plain)
+	}
+	return rd
+}
 
 // read parses s and checks it against the settings. Its errors are
 // ErrInvalidRule, or errNoRule for an empty rule or a comment.
@@ -295,15 +305,10 @@ func (rd *ruleReader) read(s string) (Rule, error) {
 	if n := len(trimRule(s)); lim.MaxRuleLen > 0 && n > lim.MaxRuleLen {
 		return Rule{}, fmt.Errorf("%w: %d bytes, more than %d", ErrLimit, n, lim.MaxRuleLen)
 	}
-	plain := c.PlainDomain
-	switch plain {
-	case 0:
-		plain = RuleKeyword
-	case RuleKeyword, RuleDomain, RuleFull:
-	default:
-		return Rule{}, fmt.Errorf("%w: Compiler.PlainDomain is %v, not keyword, domain or full", ErrInvalidRule, plain)
+	if rd.plainErr != nil {
+		return Rule{}, rd.plainErr
 	}
-	r, err := parseRule(s, plain)
+	r, err := parseRule(s, rd.plain)
 	if err != nil {
 		return Rule{}, withClass(err, ErrInvalidRule)
 	}

@@ -53,9 +53,10 @@ func (m Mode) String() string {
 
 // ParseMode parses a mode from its name, its number, or a common synonym:
 // off, none, disabled or 0; allowlist, allow, whitelist or 1; denylist,
-// deny, blocklist, blacklist or 2. Case and surrounding spaces are ignored.
+// deny, blocklist, blacklist or 2. Case, surrounding spaces, and - or _ in
+// names are ignored, as in allow-list.
 func ParseMode(s string) (Mode, error) {
-	switch strings.ToLower(strings.TrimSpace(s)) {
+	switch configName(s) {
 	case "off", "none", "disabled", "0", "":
 		return ModeOff, nil
 	case "allowlist", "allow", "whitelist", "1":
@@ -64,6 +65,20 @@ func ParseMode(s string) (Mode, error) {
 		return ModeDenylist, nil
 	}
 	return ModeOff, fmt.Errorf("geomatch: unknown policy mode %q", s)
+}
+
+// nameSeparators are the separators that names in configuration may have.
+var nameSeparators = strings.NewReplacer("-", "", "_", "")
+
+// configName returns a name of configuration as ParseMode and ParsePriority
+// compare it: lowercase, without surrounding spaces, and without - or _ in a
+// name, which has letters, so that a number such as -1 is no name.
+func configName(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if strings.IndexFunc(s, func(r rune) bool { return r >= 'a' && r <= 'z' }) >= 0 {
+		s = nameSeparators.Replace(s)
+	}
+	return s
 }
 
 // MarshalText returns the name of m, for configuration files.
@@ -147,7 +162,7 @@ func (p Priority) String() string {
 // whitelist or 1. Case, surrounding spaces, and - or _ in names are ignored;
 // an empty string is DenyFirst.
 func ParsePriority(s string) (Priority, error) {
-	switch strings.NewReplacer("-", "", "_", "").Replace(strings.ToLower(strings.TrimSpace(s))) {
+	switch configName(s) {
 	case "denyfirst", "deny", "denylist", "blacklist", "blocklist", "0", "":
 		return DenyFirst, nil
 	case "allowfirst", "allow", "allowlist", "whitelist", "1":

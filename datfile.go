@@ -42,6 +42,37 @@ func (f *datFile) read(handle geoFile, name, code string) ([]byte, error) {
 	return rec, nil
 }
 
+// entryKind reports whether the entry for code of f, open as handle, is read
+// as a geoip entry for a rule of kind, from the kind of the entry when f read
+// it before, or else from its record, which it returns.
+func (f *datFile) entryKind(handle geoFile, name, code string, kind int) (isIP bool, rec []byte, err error) {
+	k, known := f.kinds[code]
+	if !known {
+		if rec, err = f.read(handle, name, code); err != nil {
+			return false, nil, err
+		}
+		k = recordKind(rec)
+		if f.kinds == nil {
+			f.kinds = make(map[string]recKind)
+		}
+		f.kinds[code] = k
+	}
+	isIP, err = resolveKind(name, code, k, kind)
+	return isIP, rec, err
+}
+
+// readEntry decodes the entry for code of f, open as handle, as a geoip
+// entry or a geosite one, reading its record unless rec holds it.
+func (f *datFile) readEntry(handle geoFile, name, code string, isIP bool, rec []byte) (GeoIP, []Domain, error) {
+	if rec == nil {
+		var err error
+		if rec, err = f.read(handle, name, code); err != nil {
+			return GeoIP{}, nil, err
+		}
+	}
+	return decodeRecord(name, code, rec, isIP)
+}
+
 // readFull fills p from r at off. io.ReaderAt may report io.EOF along with
 // the last bytes; only a short read is an error, as the file was indexed at
 // a size it no longer has.
@@ -232,7 +263,8 @@ func decodeCIDR(msg []byte) (netip.Prefix, bool) {
 
 // decodeGeoSite decodes a GeoSite message: code (1) and domains (2). Each
 // domain holds its type (1), value (2) and attributes (3), whose key is
-// field 1; unknown types and empty values are left out.
+// field 1; unknown types, empty values and names that are not valid UTF-8 are
+// left out.
 func decodeGeoSite(rec []byte) ([]Domain, error) {
 	var domains []Domain
 	r := protoReader{b: rec}
@@ -284,7 +316,13 @@ func decodeDomain(msg []byte) (Domain, bool) {
 	}
 	switch d.Type {
 	case DomainRoot, DomainFull:
-		d.Value = strings.TrimSuffix(strings.ToLower(d.Value), ".")
+		// In the form that queries match in, as rules are: an
+		// internationalized name in its xn-- form.
+		host, ok := normalHost(d.Value)
+		if !ok {
+			return Domain{}, false
+		}
+		d.Value = host
 	case DomainKeyword:
 		// A keyword is text, whose trailing dot, as in "google.", matters.
 		d.Value = strings.ToLower(d.Value)

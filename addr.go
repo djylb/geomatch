@@ -17,7 +17,7 @@ import (
 // accept, such as 127.1, 2130706433 or 0x7f.0.0.1, as the IPv4 address it
 // stands for, so that IP rules see the address a program would connect to.
 func HostOf(addr string) string {
-	if plain, _ := hostClass(addr); plain {
+	if isPlainHost(addr) {
 		return addr
 	}
 	s := strings.TrimSpace(addr)
@@ -53,35 +53,24 @@ func HostOf(addr string) string {
 	if i := strings.LastIndexByte(s, '%'); i >= 0 && ipv6 {
 		s = s[:i] // zone
 	}
-	if !isASCII(s) {
-		// Full-width dots, read as dots, before the trailing one goes.
-		ascii, ok := asciiHost(s)
-		if !ok {
-			return "" // not valid UTF-8: no host
-		}
-		s = ascii
-	}
-	return strings.ToLower(strings.TrimSuffix(s, "."))
+	host, _ := normalHost(s) // "" for invalid UTF-8: no host
+	return host
 }
 
-// hostClass scans s once. plain reports whether s is already a normalized
-// host name or IPv4 address, the common case, which HostOf returns unchanged;
-// numeric whether it holds only digits and dots, so may be an IPv4 address.
-func hostClass(s string) (plain, numeric bool) {
+// isPlainHost reports whether s is already a normalized host name or IPv4
+// address, the common case, which HostOf returns unchanged.
+func isPlainHost(s string) bool {
 	if s == "" || s[len(s)-1] == '.' {
-		return false, false
+		return false
 	}
-	numeric = true
 	for i := range len(s) {
 		switch c := s[i]; {
-		case c >= '0' && c <= '9', c == '.':
-		case c >= 'a' && c <= 'z', c == '-', c == '_':
-			numeric = false
+		case c >= '0' && c <= '9', c == '.', c >= 'a' && c <= 'z', c == '-', c == '_':
 		default:
-			return false, false
+			return false
 		}
 	}
-	return true, numeric
+	return true
 }
 
 // target is what a query matches: an IP address, unmapped and without a
@@ -94,28 +83,37 @@ type target struct {
 
 // addrTarget reads the host of addr, as its IP address if it is one.
 func addrTarget(addr string) target {
-	host, numeric := addr, false
-	if plain, num := hostClass(addr); plain {
-		numeric = num
-	} else {
-		host = HostOf(addr)
-		numeric = strings.IndexByte(host, ':') >= 0 || strings.Trim(host, "0123456789.") == ""
-	}
-	if numeric {
-		if ip, err := netip.ParseAddr(host); err == nil {
-			return ipTarget(ip)
-		}
-	}
-	if ip, ok := legacyIPv4(host); ok {
-		return ipTarget(ip)
+	host := HostOf(addr)
+	if ip, ok := hostIP(host); ok {
+		return target{ip: ip}
 	}
 	return target{host: host}
+}
+
+// hostIP parses host, as HostOf returns it, as an IP address: a host with a
+// colon as netip.ParseAddr reads it, and others in the forms of IPv4 that
+// legacyIPv4 reads, dotted decimal among them. It allocates only for a host
+// with a colon that is no address, for the error of netip.ParseAddr. The
+// address is unmapped and without a zone.
+func hostIP(host string) (netip.Addr, bool) {
+	if strings.IndexByte(host, ':') < 0 {
+		return legacyIPv4(host)
+	}
+	ip, err := netip.ParseAddr(host)
+	return normalAddr(ip), err == nil
+}
+
+// normalAddr returns ip as queries and rules match it: an IPv4-mapped
+// address as IPv4, without a zone.
+func normalAddr(ip netip.Addr) netip.Addr {
+	return ip.Unmap().WithZone("")
 }
 
 // legacyIPv4 parses host as inet_aton does, which system resolvers use for
 // numeric hosts: one to four parts, each decimal, octal with a leading 0 or
 // hexadecimal with 0x, the last filling the remaining bytes, as in 127.1,
-// 2130706433 or 0x7f.0.0.1. Hosts that netip.ParseAddr reads are read there.
+// 2130706433 or 0x7f.0.0.1, and the dotted decimal form that netip.ParseAddr
+// reads.
 func legacyIPv4(host string) (netip.Addr, bool) {
 	if host == "" || host[0] < '0' || host[0] > '9' {
 		return netip.Addr{}, false
@@ -185,19 +183,14 @@ func legacyNumber(s string) (uint64, bool) {
 }
 
 func ipTarget(ip netip.Addr) target {
-	return target{ip: ip.Unmap().WithZone("")}
+	return target{ip: normalAddr(ip)}
 }
 
 // domainTarget reads host as a domain name only: an IP address, also in a
 // legacy form, is no target.
 func domainTarget(host string) target {
-	if plain, numeric := hostClass(host); !plain || numeric {
-		host = HostOf(host)
-		if _, ok := parseIP(host); ok {
-			return target{}
-		}
-	}
-	if _, ok := legacyIPv4(host); ok {
+	host = HostOf(host)
+	if _, ok := hostIP(host); ok {
 		return target{}
 	}
 	return target{host: host}
@@ -207,7 +200,7 @@ func domainTarget(host string) target {
 // resolved to; either may be missing.
 func hostIPTarget(host string, ip netip.Addr) target {
 	t := domainTarget(host)
-	t.ip = ip.Unmap().WithZone("")
+	t.ip = normalAddr(ip)
 	return t
 }
 
@@ -229,21 +222,4 @@ func netAddrTarget(a net.Addr) target {
 		return ipTarget(ip)
 	}
 	return addrTarget(a.String())
-}
-
-// parseIP parses host as an IP address, without building an error for the
-// common case of a domain name.
-func parseIP(host string) (netip.Addr, bool) {
-	if host == "" {
-		return netip.Addr{}, false
-	}
-	if strings.IndexByte(host, ':') < 0 {
-		for i := range len(host) {
-			if c := host[i]; (c < '0' || c > '9') && c != '.' {
-				return netip.Addr{}, false
-			}
-		}
-	}
-	ip, err := netip.ParseAddr(host)
-	return ip, err == nil
 }

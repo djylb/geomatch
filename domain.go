@@ -36,14 +36,16 @@ func (d *domainSet) addKeyword(keyword string) {
 	d.keywords = append(d.keywords, keyword)
 }
 
-func (d *domainSet) addRegexp(pattern string) error {
+// addRegexp adds a regexp: rule or entry and returns its compiled form, which
+// the rule's probe shares.
+func (d *domainSet) addRegexp(pattern string) (*regexp.Regexp, error) {
 	re, err := regexp.Compile("(?i)" + pattern)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	d.regexps = append(d.regexps, re)
 	d.lits = append(d.lits, requiredLiteral(pattern))
-	return nil
+	return re, nil
 }
 
 // finish builds the name table and the literal index once every rule is
@@ -117,6 +119,33 @@ func (d *domainSet) match(host string) bool {
 	return false
 }
 
+// nameFlags returns the nameExact and nameSub flags of the names of full:,
+// domain: and subdomain rules, or 0 for other kinds.
+func nameFlags(k RuleKind) uint8 {
+	switch k {
+	case RuleFull:
+		return nameExact
+	case RuleDomain:
+		return nameExact | nameSub
+	case RuleSubdomain:
+		return nameSub
+	default:
+		return 0
+	}
+}
+
+// matchName reports whether host matches name with flags, as a domainTable
+// matches it: as name itself with nameExact, or a subdomain with nameSub.
+func matchName(host, name string, flags uint8) bool {
+	return flags&nameExact != 0 && host == name || flags&nameSub != 0 && isSubdomain(host, name)
+}
+
+// isSubdomain reports whether host is a subdomain of domain.
+func isSubdomain(host, domain string) bool {
+	n := len(host) - len(domain)
+	return n > 0 && host[n-1] == '.' && host[n:] == domain
+}
+
 func isASCII(s string) bool {
 	for i := range len(s) {
 		if s[i] >= 0x80 {
@@ -138,7 +167,7 @@ func (d *domainSet) addDomains(domains []Domain) {
 			d.addKeyword(dom.Value)
 		case DomainRegexp:
 			// An entry that does not compile is left out.
-			_ = d.addRegexp(dom.Value)
+			_, _ = d.addRegexp(dom.Value)
 		}
 	}
 }

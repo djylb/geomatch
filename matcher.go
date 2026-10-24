@@ -26,13 +26,10 @@ type Matcher struct {
 	domRules int
 
 	probes  []probe       // one per compiled rule, in order, for Find
-	once    sync.Once     // compiles the regular expressions of probes and explain
+	once    sync.Once     // builds explain
 	explain *explainIndex // finds the first rule that matches, for Find
 
-	geo     *GeoData
-	cfgGen  uint64   // of the files of geo it was compiled from, for Stale
-	sources []source // the geodata files read, for Stale
-
+	snapshot // the geodata it was compiled from, for Stale
 }
 
 // Match reports whether addr matches: its host, as HostOf extracts it, is
@@ -88,27 +85,55 @@ func (m *Matcher) FindHostIP(host string, ip netip.Addr) (Rule, bool) {
 // the files, so that compiling the rules again would give a different
 // Matcher. It checks the files' metadata only.
 func (m *Matcher) Stale() bool {
-	if m == nil || m.geo == nil {
-		return false
-	}
-	if m.geo.view().cfgGen != m.cfgGen {
-		return true
-	}
-	for _, s := range m.sources {
-		if s.changed() {
-			return true
-		}
-	}
-	return false
+	return m != nil && m.stale(false)
 }
 
-// missingSource reports whether a geodata file of m did not exist, or could
-// not be read for the built-in private ranges.
-func (m *Matcher) missingSource() bool {
-	if m == nil {
+// snapshot is the geodata that a compile read: the files of a GeoData, and
+// the version of each file read.
+type snapshot struct {
+	geo     *GeoData
+	cfgGen  uint64   // of the files of geo, for stale
+	sources []source // the geodata files read, for stale
+}
+
+// stale reports whether compiling the rules again would read other geodata,
+// as Matcher.Stale does. With checked, which GeoData.RefreshLives passes
+// right after GeoData.Check, a file that the GeoData holds the index of is
+// compared with the version that the GeoData recorded rather than looked at
+// again: Check dropped the indexes of the files that changed, which are
+// looked at, as are those that the GeoData holds no index of.
+func (s *snapshot) stale(checked bool) bool {
+	g := s.geo
+	if g == nil {
 		return false
 	}
-	return slices.ContainsFunc(m.sources, func(s source) bool { return s.info == nil || s.fallback })
+	g.mu.Lock()
+	if g.cfgGen != s.cfgGen {
+		g.mu.Unlock()
+		return true
+	}
+	unknown := s.sources // the files to look at
+	if checked {
+		unknown = nil
+		for _, src := range s.sources {
+			f, ok := g.files[src.name]
+			switch {
+			case !ok || src.info == nil:
+				unknown = append(unknown, src)
+			case !sameVersion(f.info, src.info):
+				g.mu.Unlock()
+				return true
+			}
+		}
+	}
+	g.mu.Unlock()
+	return slices.ContainsFunc(unknown, source.changed)
+}
+
+// missing reports whether a geodata file of s did not exist, or could not be
+// read for the built-in private ranges.
+func (s *snapshot) missing() bool {
+	return slices.ContainsFunc(s.sources, func(src source) bool { return src.info == nil || src.fallback })
 }
 
 // Sources returns the geodata files that m was compiled from, in the order
@@ -194,7 +219,7 @@ func (m *Matcher) find(t target) (Rule, bool) {
 	if !m.match(t) {
 		return Rule{}, false
 	}
-	m.once.Do(m.compileProbes)
+	m.once.Do(m.buildExplain)
 	if i := m.explain.first(m.probes, t); i >= 0 {
 		return m.probes[i].rule.clone(), true
 	}
@@ -204,19 +229,13 @@ func (m *Matcher) find(t target) (Rule, bool) {
 // probe tests one compiled rule on its own, for Find.
 type probe struct {
 	rule Rule
-	geo  *geoIPSet  // the compiled geoip entry of a geo rule
-	site *domainSet // the compiled geosite entry of a geo rule
-	re   *regexp.Regexp
+	geo  *geoIPSet      // the compiled geoip entry of a geo rule
+	site *domainSet     // the compiled geosite entry of a geo rule
+	re   *regexp.Regexp // of a regexp: rule, shared with its domainSet
 }
 
-// compileProbes compiles the regular expressions of the probes and the index
-// of the rules, which only Find needs.
-func (m *Matcher) compileProbes() {
-	for i := range m.probes {
-		if p := &m.probes[i]; p.rule.Kind == RuleRegexp {
-			p.re, _ = regexp.Compile("(?i)" + p.rule.Value)
-		}
-	}
+// buildExplain builds the index of the rules, which only Find needs.
+func (m *Matcher) buildExplain() {
 	m.explain = newExplainIndex(m.probes)
 }
 
@@ -237,12 +256,8 @@ func (p *probe) matchIP(ip netip.Addr) bool {
 func (p *probe) matchHost(host string) bool {
 	r := &p.rule
 	switch r.Kind {
-	case RuleFull:
-		return host == r.Value
-	case RuleDomain:
-		return host == r.Value || isSubdomain(host, r.Value)
-	case RuleSubdomain:
-		return isSubdomain(host, r.Value)
+	case RuleFull, RuleDomain, RuleSubdomain:
+		return matchName(host, r.Value, nameFlags(r.Kind))
 	case RuleKeyword:
 		return strings.Contains(host, r.Value)
 	case RuleRegexp:
@@ -265,10 +280,4 @@ func (p *probe) matchHost(host string) bool {
 func (r Rule) clone() Rule {
 	r.Attrs = slices.Clone(r.Attrs)
 	return r
-}
-
-// isSubdomain reports whether host is a subdomain of domain.
-func isSubdomain(host, domain string) bool {
-	n := len(host) - len(domain)
-	return n > 0 && host[n-1] == '.' && host[n:] == domain
 }

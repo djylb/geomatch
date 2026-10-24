@@ -85,7 +85,7 @@ func TestRegexpPrefilter(t *testing.T) {
 	var d domainSet
 	var all []*regexp.Regexp
 	for _, p := range patterns {
-		if err := d.addRegexp(p); err != nil {
+		if _, err := d.addRegexp(p); err != nil {
 			t.Fatal(err)
 		}
 		all = append(all, regexp.MustCompile("(?i)"+p))
