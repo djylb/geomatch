@@ -23,8 +23,10 @@ func TestPolicyLists(t *testing.T) {
 		{"allowlist", Policy{Allow: allow, Priority: AllowFirst}, []bool{true, true, true, true, false, false}},
 		{"denylist", Policy{Deny: deny}, []bool{true, false, false, true, false, true}},
 		{"nil *Matcher", Policy{Allow: (*Matcher)(nil)}, []bool{true, true, true, true, true, true}},
-		{"no rules", Policy{Allow: MustCompile(nil), Deny: deny}, []bool{true, false, false, true, false, true}},
-		{"comments only", Policy{Allow: MustCompile([]string{"# none", ""})}, []bool{true, true, true, true, true, true}},
+		// Any Matcher is a set list: an allowlist of no rules allows nothing.
+		{"no rules", Policy{Allow: MustCompile(nil), Deny: deny}, []bool{false, false, false, false, false, false}},
+		{"comments only", Policy{Allow: MustCompile([]string{"# none", ""})}, []bool{false, false, false, false, false, false}},
+		{"denylist of no rules", Policy{Deny: MustCompile(nil)}, []bool{true, true, true, true, true, true}},
 		{"rules all skipped", Policy{Allow: skipped}, []bool{false, false, false, false, false, false}},
 		{"nil *Live", Policy{Deny: (*Live)(nil)}, []bool{true, true, true, true, true, true}},
 		{"zero", Policy{}, []bool{true, true, true, true, true, true}},

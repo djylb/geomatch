@@ -232,11 +232,11 @@ const (
 	kindAny // whichever the record holds, for ext: rules
 )
 
-// LoadIP reads the entry for code, case-insensitive, of the geoip file at
-// path file, or of the IP file when file is empty. Unlike the file of an
-// ext-ip: rule, file is taken as given, not relative to Dir. The code
-// PRIVATE falls back to the built-in private and special-use ranges when the
-// file lacks it or cannot be read.
+// LoadIP reads the entry for code, case-insensitive, of the geoip file
+// named file as an ext-ip: rule names it, so relative to Dir as GeoFiles
+// tells, or of the IP file when file is empty. The code PRIVATE falls back to
+// the built-in private and special-use ranges when the file lacks it or
+// cannot be read.
 func (g *GeoData) LoadIP(file, code string) (GeoIP, error) {
 	geo, _, _, err := g.load(file, func(f GeoFiles) string { return f.IP }, code, kindIP)
 	if err != nil && strings.EqualFold(strings.TrimSpace(code), "private") {
@@ -246,28 +246,58 @@ func (g *GeoData) LoadIP(file, code string) (GeoIP, error) {
 }
 
 // LoadSite reads the entries for code, case-insensitive, of the geosite file
-// at path file, as given, or of the site file when file is empty.
+// named file as an ext-domain: rule names it, or of the site file when file
+// is empty.
 func (g *GeoData) LoadSite(file, code string) ([]Domain, error) {
 	_, domains, _, err := g.load(file, func(f GeoFiles) string { return f.Site }, code, kindSite)
 	return domains, prefixed(err)
 }
 
-// IPCodes returns the codes of the geoip file at path file, as given, or of
-// the IP file when file is empty, sorted and upper-case.
+// IPCodes returns the codes of the geoip file named file as an ext-ip: rule
+// names it, or of the IP file when file is empty, sorted and upper-case.
 func (g *GeoData) IPCodes(file string) ([]string, error) {
-	return g.codes(file, func(f GeoFiles) string { return f.IP })
+	return g.codes(file, func(f GeoFiles) string { return f.IP }, kindIP)
 }
 
-// SiteCodes returns the codes of the geosite file at path file, as given, or
-// of the site file when file is empty, sorted and upper-case: the categories
-// that geosite: rules can name.
+// SiteCodes returns the codes of the geosite file named file as an
+// ext-domain: rule names it, or of the site file when file is empty, sorted
+// and upper-case: the categories that geosite: rules can name.
 func (g *GeoData) SiteCodes(file string) ([]string, error) {
-	return g.codes(file, func(f GeoFiles) string { return f.Site })
+	return g.codes(file, func(f GeoFiles) string { return f.Site }, kindSite)
 }
 
-func (g *GeoData) codes(file string, def func(GeoFiles) string) ([]string, error) {
-	codes, err := g.codesLocked(file, def)
+// SiteAttrs returns the attributes that the domains of the entry for code of
+// a geosite file have, as LoadSite reads it, sorted and lowercase: those
+// that geosite:code@attr rules can name, such as for a form that offers them.
+func (g *GeoData) SiteAttrs(file, code string) ([]string, error) {
+	domains, err := g.LoadSite(file, code)
+	if err != nil {
+		return nil, err
+	}
+	var attrs []string
+	for _, d := range domains {
+		for _, a := range d.Attrs {
+			if a = lowerASCII(a); !slices.Contains(attrs, a) {
+				attrs = append(attrs, a)
+			}
+		}
+	}
+	slices.Sort(attrs)
+	return attrs, nil
+}
+
+func (g *GeoData) codes(file string, def func(GeoFiles) string, kind int) ([]string, error) {
+	codes, err := g.codesLocked(file, def, kind)
 	return codes, prefixed(err)
+}
+
+// fileName returns the file named file as an ext: rule of kind names it,
+// or the default file of def for "".
+func (v view) fileName(file string, def func(GeoFiles) string, kind int) (string, error) {
+	if file = strings.TrimSpace(file); file == "" {
+		return def(v.cfg), nil
+	}
+	return v.extPath(file, kind)
 }
 
 // prefixed returns err, if any, with the package name, as an error of the
@@ -279,11 +309,15 @@ func prefixed(err error) error {
 	return fmt.Errorf("geomatch: %w", err)
 }
 
-func (g *GeoData) codesLocked(file string, def func(GeoFiles) string) ([]string, error) {
+func (g *GeoData) codesLocked(file string, def func(GeoFiles) string, kind int) ([]string, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	v := g.viewLocked()
-	f, handle, _, err := g.openLocked(v, cmpOr(file, def(v.cfg)))
+	name, err := v.fileName(file, def, kind)
+	if err != nil {
+		return nil, err
+	}
+	f, handle, _, err := g.openLocked(v, name)
 	if err != nil {
 		return nil, err
 	}
@@ -341,15 +375,6 @@ func (v view) extDir(dir func(string) string, kind int) string {
 	}
 }
 
-func cmpOr(values ...string) string {
-	for _, v := range values {
-		if v = strings.TrimSpace(v); v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
 // load returns the entry for code of the file name, decoded as kind, and
 // reports whether it is a geoip entry.
 func (g *GeoData) load(file string, def func(GeoFiles) string, code string, kind int) (geo GeoIP, domains []Domain, isIP bool, err error) {
@@ -357,7 +382,10 @@ func (g *GeoData) load(file string, def func(GeoFiles) string, code string, kind
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	v := g.viewLocked()
-	name := cmpOr(file, def(v.cfg))
+	name, err := v.fileName(file, def, kind)
+	if err != nil {
+		return GeoIP{}, nil, false, err
+	}
 	f, handle, _, err := g.openLocked(v, name)
 	if err != nil {
 		return GeoIP{}, nil, false, err

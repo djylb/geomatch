@@ -17,7 +17,6 @@ type builder struct {
 	domRules int
 	probes   []probe
 	sources  []source
-	given    int // rules given, compiled or not
 }
 
 func newBuilder(geo *GeoData) *builder {
@@ -45,7 +44,6 @@ func (c *builder) finish() *Matcher {
 		geo:      c.geo,
 		cfgGen:   c.view.cfgGen,
 		sources:  c.sources,
-		noRules:  c.given == 0,
 	}
 	if own := c.ips.build(); own.ranges() > 0 {
 		m.ipSets = append([]*ipSet{own}, m.ipSets...)

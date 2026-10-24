@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"testing"
@@ -20,10 +21,10 @@ func TestUnknownKind(t *testing.T) {
 		}
 	}
 	for s, want := range map[string]string{
-		"localhost:8080":       "keyword:localhost",
-		"example.com:443":      "keyword:example.com",
-		"https://Example.com/": "keyword:example.com",
-		"//example.com/x":      "keyword:example.com",
+		"localhost:8080":       "localhost",
+		"example.com:443":      "example.com",
+		"https://Example.com/": "example.com",
+		"//example.com/x":      "example.com",
 		"2001:db8::1":          "2001:db8::1",
 		"fe80::1%eth0":         "fe80::1",
 		"[::1]:80":             "::1",
@@ -40,22 +41,22 @@ func TestIPRangeRejected(t *testing.T) {
 			t.Errorf("ParseRule(%q) = %v", s, err)
 		}
 	}
-	if r, err := ParseRule("my-host.example"); err != nil || r.String() != "keyword:my-host.example" {
+	if r, err := ParseRule("my-host.example"); err != nil || r.Kind != RuleKeyword || r.String() != "my-host.example" {
 		t.Errorf("hyphenated host = %v, %v", r, err)
 	}
 }
 
 func TestPlainDomain(t *testing.T) {
-	for kind, want := range map[RuleKind][]string{
-		0:           {"keyword:example.com", "keyword:.example.com"},
-		RuleKeyword: {"keyword:example.com", "keyword:.example.com"},
-		RuleDomain:  {"domain:example.com", "*.example.com"},
-		RuleFull:    {"full:example.com", "*.example.com"},
+	for kind, want := range map[RuleKind][]Rule{
+		0:           {{Kind: RuleKeyword, Value: "example.com", Plain: true}, {Kind: RuleKeyword, Value: ".example.com", Plain: true}},
+		RuleKeyword: {{Kind: RuleKeyword, Value: "example.com", Plain: true}, {Kind: RuleKeyword, Value: ".example.com", Plain: true}},
+		RuleDomain:  {{Kind: RuleDomain, Value: "example.com", Plain: true}, {Kind: RuleSubdomain, Value: "example.com", Plain: true}},
+		RuleFull:    {{Kind: RuleFull, Value: "example.com", Plain: true}, {Kind: RuleSubdomain, Value: "example.com", Plain: true}},
 	} {
 		c := Compiler{PlainDomain: kind}
 		for i, s := range []string{"Example.com:443", ".example.com"} {
-			if r, err := c.ParseRule(s); err != nil || r.String() != want[i] {
-				t.Errorf("PlainDomain %v: ParseRule(%q) = %v, %v; want %s", kind, s, r, err, want[i])
+			if r, err := c.ParseRule(s); err != nil || !reflect.DeepEqual(r, want[i]) {
+				t.Errorf("PlainDomain %v: ParseRule(%q) = %+v, %v; want %+v", kind, s, r, err, want[i])
 			}
 		}
 		// Only domains change: addresses and kinds written out do not.
@@ -120,7 +121,7 @@ func TestPriorityJSONNumber(t *testing.T) {
 
 func TestNormalize(t *testing.T) {
 	got, err := (Compiler{}).Normalize(SplitLines("*Example.COM\n# c\ndomain:example.com\n10.1.2.3/8\n\nfull:\n10.0.0.0/8\nfoo"))
-	if want := []string{"domain:example.com", "10.0.0.0/8", "keyword:foo"}; !slices.Equal(got, want) {
+	if want := []string{"domain:example.com", "10.0.0.0/8", "foo"}; !slices.Equal(got, want) {
 		t.Errorf("Normalize = %q, want %q", got, want)
 	}
 	var errs RuleErrors

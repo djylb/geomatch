@@ -248,7 +248,6 @@ func (c Compiler) Compile(rules []string) (*Matcher, error) {
 		if errors.Is(err, errNoRule) {
 			continue
 		}
-		b.given++
 		if err == nil {
 			err = b.add(r)
 		}
@@ -264,7 +263,6 @@ func (c Compiler) CompileRules(rules []Rule) (*Matcher, error) {
 	b := newBuilder(c.GeoData)
 	rd := c.reader(b.view)
 	var errs RuleErrors
-	b.given = len(rules)
 	for i, r := range rules {
 		s := r.String()
 		n, err := rd.read(s)

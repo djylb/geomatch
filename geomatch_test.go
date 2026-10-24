@@ -339,7 +339,7 @@ func TestPolicy(t *testing.T) {
 
 func TestParseRules(t *testing.T) {
 	rules, err := ParseRules([]string{"a.test", "", "  # c", "full:", "; d", "10.0.0.0/8", "foo*bar"})
-	if got := fmt.Sprint(rules); got != "[keyword:a.test 10.0.0.0/8]" {
+	if got := fmt.Sprint(rules); got != "[a.test 10.0.0.0/8]" || !rules[0].Plain {
 		t.Errorf("ParseRules() rules = %s", got)
 	}
 	var errs RuleErrors

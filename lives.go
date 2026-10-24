@@ -42,47 +42,82 @@ func (ll *liveList) compactLocked() []*Live {
 	return lives
 }
 
+// RefreshResult reports a round of GeoData.RefreshLives.
+type RefreshResult struct {
+	// Replaced are the Lives whose Matcher was compiled again.
+	Replaced []*Live
+	// Failed are the Lives that kept their Matcher because new geodata broke
+	// rules that compiled before, as their RefreshErr reports.
+	Failed []*Live
+	// Errors are the distinct geodata errors of the Failed Lives, one per
+	// file and cause however many Lives it broke, for a log.
+	Errors []error
+}
+
+// Changed reports whether the round replaced or kept a Matcher.
+func (r RefreshResult) Changed() bool {
+	return len(r.Replaced) > 0 || len(r.Failed) > 0
+}
+
 // RefreshLives checks the files that g has read, as Check does, and
 // refreshes, as Live.Refresh does, every Live compiled with g whose files may
 // have changed since it last compiled or checked them, so that a program with
 // many Lives, such as one per user, checks each file once rather than once
-// per Live. report, if not nil, is called with each Live whose Refresh
-// replaced its Matcher or failed. RefreshLives returns how many it replaced.
-func (g *GeoData) RefreshLives(report func(l *Live, replaced bool, err error)) int {
+// per Live. Live.Tag tells the Lives of the result apart.
+func (g *GeoData) RefreshLives() RefreshResult {
+	var res RefreshResult
 	if g == nil {
-		return 0
+		return res
 	}
 	gen := g.Check()
 	g.lives.mu.Lock()
 	lives := g.lives.compactLocked()
 	g.lives.mu.Unlock()
-	n := 0
+	seen := make(map[string]bool)
 	for _, l := range lives {
 		if l.seen.Load() == gen {
 			continue
 		}
-		replaced, err := l.Refresh()
-		if replaced {
-			n++
-		}
-		if report != nil && (replaced || err != nil) {
-			report(l, replaced, err)
+		switch replaced, err := l.Refresh(); {
+		case replaced:
+			res.Replaced = append(res.Replaced, l)
+		case err != nil:
+			res.Failed = append(res.Failed, l)
+			for _, e := range geoCauses(err) {
+				if msg := e.Error(); !seen[msg] {
+					seen[msg] = true
+					res.Errors = append(res.Errors, e)
+				}
+			}
 		}
 	}
-	return n
+	return res
 }
 
-// WatchLives calls RefreshLives every interval until ctx is done, with
-// report. It returns ctx.Err(), or an error at once if interval is not
-// positive. Run it in its own goroutine, once for the GeoData of the
-// program:
+// geoCauses returns the geodata errors of err, without the rules they broke.
+func geoCauses(err error) []error {
+	var errs RuleErrors
+	if !errors.As(err, &errs) {
+		return []error{err}
+	}
+	var causes []error
+	for _, e := range errs.Filter(ErrGeoData) {
+		causes = append(causes, e.Err)
+	}
+	return causes
+}
+
+// WatchLives calls RefreshLives every interval until ctx is done, and
+// report, if not nil, with each result that Changed. It returns ctx.Err(),
+// or an error at once if interval is not positive. Run it in its own
+// goroutine, once for the GeoData of the program:
 //
-//	go geo.WatchLives(ctx, time.Minute, func(l *geomatch.Live, replaced bool, err error) {
-//		if err != nil {
-//			log.Printf("geodata: %v", err)
+//	go geo.WatchLives(ctx, time.Minute, func(r geomatch.RefreshResult) {
+//		for _, err := range r.Errors {
+//			log.Printf("geodata: %v (kept the rules of %d lists)", err, len(r.Failed))
 //		}
 //	})
-func (g *GeoData) WatchLives(ctx context.Context, interval time.Duration, report func(l *Live, replaced bool, err error)) error {
+func (g *GeoData) WatchLives(ctx context.Context, interval time.Duration, report func(RefreshResult)) error {
 	if interval <= 0 {
 		return errors.New("geomatch: WatchLives interval must be positive")
 	}
@@ -93,7 +128,9 @@ func (g *GeoData) WatchLives(ctx context.Context, interval time.Duration, report
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-t.C:
-			g.RefreshLives(report)
+			if res := g.RefreshLives(); report != nil && res.Changed() {
+				report(res)
+			}
 		}
 	}
 }

@@ -17,10 +17,17 @@ import (
 //     general ones. Addresses that no level's rules match are allowed, or
 //     denied with DenyUnmatched.
 //
+// With FirstMatch a level is a list of decisions rather than a policy of its
+// own: an Allow list there allows what it matches and leaves the rest to the
+// next levels, rather than denying it. A user level of Allow: full:a.com
+// then still lets the other levels, or DenyUnmatched, decide b.com; to deny
+// what a level's allowlist leaves out, use the default, every level must
+// allow, or give the level a Deny list of what it denies.
+//
 // A level that is not set, the zero Policy, never matches and allows
 // everything, so it changes nothing either way. Decision.Level tells which
-// level decided, and Decision.Name its Policy.Name. The methods take the forms of those of Policy, and read the
-// address once. Levels are safe for concurrent use while their fields are
+// level decided, and Decision.Name its Policy.Name. The methods take the
+// forms of those of Policy, and read the address once. Levels are safe for concurrent use while their fields are
 // not changed.
 type Levels struct {
 	Policies []Policy

@@ -210,8 +210,8 @@ func TestPolicyFollowsLive(t *testing.T) {
 	empty, _ := NewLive(Compiler{GeoData: geo}, nil)
 	allow := Policy{Allow: empty}
 	mode := ModeAllowlist.Policy(empty)
-	if !allow.Allows("1.2.3.4") || mode.Allows("1.2.3.4") {
-		t.Error("Live without rules")
+	if allow.Allows("1.2.3.4") || mode.Allows("1.2.3.4") {
+		t.Error("Live without rules allows")
 	}
 	if err := empty.Update([]string{"geoip:cn"}); err != nil {
 		t.Fatal(err)
@@ -239,19 +239,13 @@ func TestRefreshLives(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if n := geo.RefreshLives(nil); n != 0 {
-			t.Fatalf("RefreshLives without change replaced %d", n)
+		if r := geo.RefreshLives(); r.Changed() {
+			t.Fatalf("RefreshLives without change = %+v", r)
 		}
 
 		replaceFile(t, geo.Files().IP, encodeDat(datEntry{code: "CN", cidrs: []string{"7.7.7.0/24"}}))
-		var reported []*Live
-		if n := geo.RefreshLives(func(l *Live, replaced bool, err error) {
-			if !replaced || err != nil {
-				t.Errorf("report %v, %v", replaced, err)
-			}
-			reported = append(reported, l)
-		}); n != 3 || len(reported) != 3 {
-			t.Fatalf("RefreshLives replaced %d, reported %d; want the 3 geoip Lives", n, len(reported))
+		if r := geo.RefreshLives(); len(r.Replaced) != 3 || len(r.Failed) != 0 || len(r.Errors) != 0 {
+			t.Fatalf("RefreshLives = %+v; want the 3 geoip Lives replaced", r)
 		}
 		for _, l := range ips {
 			if !l.Matcher().Match("7.7.7.7") {
@@ -261,8 +255,8 @@ func TestRefreshLives(t *testing.T) {
 		if !sites.Matcher().Match("google.com") {
 			t.Fatal("geosite Live changed")
 		}
-		if n := geo.RefreshLives(nil); n != 0 {
-			t.Fatalf("second RefreshLives replaced %d", n)
+		if r := geo.RefreshLives(); r.Changed() {
+			t.Fatalf("second RefreshLives = %+v", r)
 		}
 
 	}()
@@ -271,7 +265,7 @@ func TestRefreshLives(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		runtime.GC()
-		geo.RefreshLives(nil)
+		geo.RefreshLives()
 		geo.lives.mu.Lock()
 		n := len(geo.lives.lives)
 		geo.lives.mu.Unlock()
@@ -323,10 +317,10 @@ func TestRefreshLivesSeesFixedFiles(t *testing.T) {
 	}
 	// Broken, then fixed.
 	replaceFile(t, geo.Files().IP, []byte{0x0a, 0x10, 1})
-	geo.RefreshLives(nil)
+	geo.RefreshLives()
 	replaceFile(t, geo.Files().IP, encodeDat(datEntry{code: "CN", cidrs: []string{"7.7.7.0/24"}}))
 	for range 3 {
-		geo.RefreshLives(nil)
+		geo.RefreshLives()
 	}
 	if !l.Matcher().Match("7.7.7.7") {
 		t.Fatal("Live not refreshed after its broken file was fixed")
@@ -343,9 +337,9 @@ func TestRefreshLivesSeesFixedFiles(t *testing.T) {
 	if err == nil {
 		t.Fatal("broken file compiled")
 	}
-	geo2.RefreshLives(nil)
+	geo2.RefreshLives()
 	replaceFile(t, name, encodeDat(datEntry{code: "CN", cidrs: []string{"8.8.8.0/24"}}))
-	geo2.RefreshLives(nil)
+	geo2.RefreshLives()
 	if !late.Matcher().Match("8.8.8.8") {
 		t.Fatal("Live with a file broken at the start not refreshed once fixed")
 	}
@@ -364,9 +358,9 @@ func TestRefreshLivesSeesFixedPrivate(t *testing.T) {
 	if err != nil || !l.Matcher().Match("10.1.1.1") {
 		t.Fatalf("built-in private ranges: %v", err)
 	}
-	geo.RefreshLives(nil)
+	geo.RefreshLives()
 	replaceFile(t, name, encodeDat(datEntry{code: "PRIVATE", cidrs: []string{"9.9.9.0/24"}}))
-	geo.RefreshLives(nil)
+	geo.RefreshLives()
 	if m := l.Matcher(); !m.Match("9.9.9.9") || m.Match("10.1.1.1") {
 		t.Fatal("Live not refreshed once the private entry's file was fixed")
 	}

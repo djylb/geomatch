@@ -194,7 +194,7 @@ type allowlist struct{ rules MatcherSource }
 var matchNothing = &Matcher{}
 
 func (a allowlist) Matcher() *Matcher {
-	if m := sourceMatcher(a.rules); isSet(m) {
+	if m := sourceMatcher(a.rules); m != nil {
 		return m
 	}
 	return matchNothing

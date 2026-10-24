@@ -46,7 +46,9 @@ func TestRuleValuesAreNotHosts(t *testing.T) {
 
 // TestGeoDataPathsAsGiven checks that the public methods take file paths as
 // given, relative to the working directory.
-func TestGeoDataPathsAsGiven(t *testing.T) {
+// TestGeoDataPaths checks that file names are read the same everywhere:
+// relative to the default file's directory, never to the working directory.
+func TestGeoDataPaths(t *testing.T) {
 	t.Chdir(t.TempDir())
 	if err := os.Mkdir("conf", 0o700); err != nil {
 		t.Fatal(err)
@@ -58,8 +60,12 @@ func TestGeoDataPathsAsGiven(t *testing.T) {
 	if codes, err := geo.IPCodes(""); err != nil || len(codes) != 1 {
 		t.Fatalf("IPCodes(IPFile) = %v, %v", codes, err)
 	}
-	if _, err := geo.LoadIP(geo.Files().IP, "cn"); err != nil {
-		t.Fatalf("LoadIP(IPFile) error = %v", err)
+	// LoadIP names files as ext-ip: rules do.
+	if _, err := geo.LoadIP("geoip.dat", "cn"); err != nil {
+		t.Fatalf("LoadIP(geoip.dat) error = %v", err)
+	}
+	if _, err := geo.LoadIP(geo.Files().IP, "cn"); err == nil {
+		t.Fatal("LoadIP read a name relative to the working directory")
 	}
 	// ext: names are relative to the default file's directory.
 	if _, err := (Compiler{GeoData: geo}).Compile([]string{"ext:geoip.dat:cn"}); err != nil {

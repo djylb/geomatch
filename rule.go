@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // RuleKind is the kind of a Rule.
@@ -78,6 +79,12 @@ type Rule struct {
 	Attrs []string
 	// Negate inverts a geoip entry: the rule matches the addresses outside it.
 	Negate bool
+	// Plain marks a domain written without a kind, such as example.com,
+	// whose kind the PlainDomain of the Compiler that compiles it decides:
+	// String writes it without a kind again, so that a rule decoded from
+	// configuration, as JSON, keeps its meaning for any Compiler. ParseRule
+	// reads it as RuleKeyword, as rule lists mean it.
+	Plain bool
 }
 
 var (
@@ -85,6 +92,7 @@ var (
 	errEmptyValue = errors.New("empty value")
 	errNotHost    = errors.New("not an IP address, CIDR or domain")
 	errWildcard   = errors.New("a wildcard must be a leading * of a domain or trailing octets of an IPv4 address")
+	errNonASCII   = errors.New("non-ASCII text, which no host matches as hosts are matched in their xn-- form; write that form")
 )
 
 // trimRule trims spaces around a rule, and the byte order mark that text
@@ -166,6 +174,9 @@ func parseRule(s string, plain RuleKind) (Rule, error) {
 		pattern := strings.TrimSpace(value)
 		if pattern == "" {
 			return Rule{}, errEmptyValue
+		}
+		if !isASCII(pattern) {
+			return Rule{}, errNonASCII
 		}
 		// Checked as written first, so that errors quote the pattern
 		// without the (?i) that matching adds.
@@ -263,13 +274,13 @@ func parsePlain(s string, plain RuleKind) (Rule, error) {
 	host, err := domainValue(rest)
 	switch {
 	case plain == RuleKeyword && dotted:
-		return Rule{Kind: RuleKeyword, Value: "." + host}, err
+		return Rule{Kind: RuleKeyword, Value: "." + host, Plain: true}, err
 	case plain == RuleKeyword:
-		return Rule{Kind: RuleKeyword, Value: host}, err
+		return Rule{Kind: RuleKeyword, Value: host, Plain: true}, err
 	case dotted:
-		return Rule{Kind: RuleSubdomain, Value: host}, err
+		return Rule{Kind: RuleSubdomain, Value: host, Plain: true}, err
 	default:
-		return Rule{Kind: plain, Value: host}, err
+		return Rule{Kind: plain, Value: host, Plain: true}, err
 	}
 }
 
@@ -293,6 +304,15 @@ func (r Rule) String() string {
 	}
 	for _, a := range r.Attrs {
 		code += "@" + a
+	}
+	if r.Plain {
+		// Without a kind, as written, for the PlainDomain of the Compiler.
+		switch r.Kind {
+		case RuleKeyword, RuleDomain, RuleFull:
+			return r.Value
+		case RuleSubdomain:
+			return "." + r.Value
+		}
 	}
 	switch r.Kind {
 	case RuleIP:
@@ -424,10 +444,15 @@ func splitAttrs(value string) (code string, attrs []string, err error) {
 	}
 	for _, a := range parts[1:] {
 		a = lowerASCII(strings.TrimSpace(a))
+		if a == "" {
+			// Not the whole entry, as dropping it would make the rule match
+			// more than written.
+			return "", nil, errors.New("an empty attribute after @")
+		}
 		if err := checkName(a); err != nil {
 			return "", nil, err
 		}
-		if a != "" && !slices.Contains(attrs, a) {
+		if !slices.Contains(attrs, a) {
 			attrs = append(attrs, a)
 		}
 	}
@@ -436,10 +461,13 @@ func splitAttrs(value string) (code string, attrs []string, err error) {
 }
 
 // domainValue normalizes the domain of a full:, domain: or *-prefixed rule:
-// lowercase, without a trailing dot, and nothing that cannot be part of a
-// host name.
+// lowercase, without a trailing dot, with internationalized labels in their
+// xn-- form, and nothing that cannot be part of a host name.
 func domainValue(value string) (string, error) {
-	host := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(value), "."))
+	if !utf8.ValidString(value) {
+		return "", errNotHost
+	}
+	host := strings.ToLower(strings.TrimSuffix(fullWidthDots(strings.TrimSpace(value)), "."))
 	switch {
 	case host == "":
 		return "", errEmptyValue
@@ -447,11 +475,25 @@ func domainValue(value string) (string, error) {
 		return "", errNotHost
 	case host[0] == '.' || host[len(host)-1] == '.' || strings.Contains(host, ".."):
 		return "", errors.New("an empty label in a domain")
+	case host[0] == ';':
+		// No host starts so, and a rule written so is a comment.
+		return "", errNotHost
 	}
 	if _, err := netip.ParseAddr(host); err == nil {
 		return "", errors.New("an IP address in a domain rule")
 	}
-	return host, nil
+	if ip, ok := legacyIPv4(host); ok {
+		// Hosts in this form are matched as addresses, so no domain rule
+		// would ever match it.
+		return "", fmt.Errorf("an IPv4 address in a legacy form, which matches as %v; write that", ip)
+	}
+	// Names travel as ASCII, as geosite files hold them: an internationalized
+	// name is written in its xn-- form to match.
+	ascii, ok := asciiHost(host)
+	if !ok {
+		return "", errNotHost
+	}
+	return ascii, nil
 }
 
 // keywordValue normalizes the text of a keyword: or dotless: rule, which is
@@ -463,6 +505,8 @@ func keywordValue(value string) (string, error) {
 		return "", errEmptyValue
 	case hasSpace(text):
 		return "", errors.New("spaces in a keyword")
+	case !isASCII(text):
+		return "", errNonASCII
 	}
 	return text, nil
 }

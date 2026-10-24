@@ -17,13 +17,13 @@ import (
 //     exceptions allows them.
 //   - With neither, as the zero Policy, it allows everything.
 //
-// A list is not set if it is nil, a nil *Matcher, or compiled from no rules,
-// as configuration without that list gives, so that compiling every list of
-// the configuration is enough. A list whose rules were all skipped, such as
-// for missing geodata, is set and matches nothing: an allowlist then allows
-// nothing rather than everything. Mode.Policy makes the Policy of
-// configuration that has a mode and rules, where an allowlist without rules
-// allows nothing.
+// A list is not set only if it is nil or a nil *Matcher: leave the list of
+// configuration that has none nil. Any Matcher is a set list, also one of no
+// rules, such as one whose rules were all skipped or rejected for missing
+// geodata or kinds a Compiler does not allow: an allowlist then allows
+// nothing rather than everything, so that rules that fail fail closed.
+// Mode.Policy makes the Policy of configuration that has a mode and rules,
+// where an allowlist without rules allows nothing too.
 //
 // Like those of Matcher, its methods come in five forms, by the kind of
 // address. Allows reports whether an address is allowed, and Decide also
@@ -38,6 +38,14 @@ type Policy struct {
 	Deny  MatcherSource
 	// Priority decides for an address that both lists match.
 	Priority Priority
+}
+
+// WithName returns p named name, as in ModeAllowlist.Policy(rules).WithName("user 7").
+//
+//goland:noinspection GoMixedReceiverTypes
+func (p Policy) WithName(name string) Policy {
+	p.Name = name
+	return p
 }
 
 // MatcherSource provides a Matcher to a Policy or a Router: a *Matcher
@@ -158,8 +166,7 @@ func (p Policy) unmatched() bool {
 
 // isSet reports whether s is a list that is set.
 func isSet(s MatcherSource) bool {
-	m := sourceMatcher(s)
-	return m != nil && !m.noRules
+	return sourceMatcher(s) != nil
 }
 
 // match reports whether a rule of p matches t, and if so whether p allows

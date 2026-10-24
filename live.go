@@ -33,6 +33,8 @@ type Live struct {
 	byRule bool
 	err    error    // of the current Matcher's compile
 	tried  *Matcher // the sources of a compile that Refresh rejected, for Stale
+	failed error    // of the last Refresh, which kept the Matcher, or nil
+	tag    any      // of SetTag
 
 	cur atomic.Pointer[Matcher]
 	// seen is the generation of the compiler's GeoData when the Live last
@@ -159,7 +161,7 @@ func (l *Live) UpdateRules(rules []Rule) error {
 func (l *Live) recompileLocked() error {
 	gen := l.generation()
 	m, err := l.compile()
-	l.err, l.tried = err, nil
+	l.err, l.tried, l.failed = err, nil, nil
 	l.cur.Store(m)
 	l.seen.Store(l.seenAfter(gen))
 	return err
@@ -191,11 +193,39 @@ func (l *Live) Refresh() (bool, error) {
 	m, err := l.compile()
 	if newGeoFailure(err, l.err) {
 		l.tried = &Matcher{geo: m.geo, cfgGen: m.cfgGen, sources: m.sources} // not its rules
+		l.failed = err
 		return false, err
 	}
-	l.err, l.tried = err, nil
+	l.err, l.tried, l.failed = err, nil, nil
 	l.cur.Store(m)
 	return true, err
+}
+
+// RefreshErr returns the error of the last Refresh, or GeoData.RefreshLives,
+// that kept the current Matcher because new geodata broke a rule that
+// compiled before, such as a file replaced by a broken one; or nil once the
+// Matcher follows the files again. Err, of the current Matcher, does not
+// report it, so health checks should look at both.
+func (l *Live) RefreshErr() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.failed
+}
+
+// SetTag attaches v to the Live, such as the user or the list it holds the
+// rules of, for reports of GeoData.RefreshLives; a map from Lives to such
+// values would keep the Lives that the program dropped.
+func (l *Live) SetTag(v any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.tag = v
+}
+
+// Tag returns the value of SetTag, or nil.
+func (l *Live) Tag() any {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.tag
 }
 
 // newGeoFailure reports whether err has a geodata failure of a rule that

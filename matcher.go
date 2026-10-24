@@ -25,14 +25,14 @@ type Matcher struct {
 	ipRules  int
 	domRules int
 
-	probes []probe   // one per compiled rule, in order, for Find
-	once   sync.Once // compiles the regular expressions of probes
+	probes  []probe       // one per compiled rule, in order, for Find
+	once    sync.Once     // compiles the regular expressions of probes and explain
+	explain *explainIndex // finds the first rule that matches, for Find
 
 	geo     *GeoData
 	cfgGen  uint64   // of the files of geo it was compiled from, for Stale
 	sources []source // the geodata files read, for Stale
 
-	noRules bool // compiled from no rules at all, for a Policy list not set
 }
 
 // Match reports whether addr matches: its host, as HostOf extracts it, is
@@ -44,8 +44,8 @@ func (m *Matcher) Match(addr string) bool { return m.match(addrTarget(addr)) }
 func (m *Matcher) MatchIP(ip netip.Addr) bool { return m.match(ipTarget(ip)) }
 
 // MatchDomain reports whether host, a domain name or host:port, matches a
-// domain rule. IP addresses match no domain rule. Rules and hosts are ASCII:
-// write internationalized names in their xn-- (punycode) form.
+// domain rule. IP addresses, also in the legacy forms of IPv4, match no
+// domain rule. Internationalized names are matched in their xn-- form.
 func (m *Matcher) MatchDomain(host string) bool { return m.match(domainTarget(host)) }
 
 // MatchNetAddr reports whether a, such as a connection's RemoteAddr, matches:
@@ -195,10 +195,8 @@ func (m *Matcher) find(t target) (Rule, bool) {
 		return Rule{}, false
 	}
 	m.once.Do(m.compileProbes)
-	for i := range m.probes {
-		if m.probes[i].match(t) {
-			return m.probes[i].rule.clone(), true
-		}
+	if i := m.explain.first(m.probes, t); i >= 0 {
+		return m.probes[i].rule.clone(), true
 	}
 	return Rule{}, false
 }
@@ -211,14 +209,15 @@ type probe struct {
 	re   *regexp.Regexp
 }
 
-// compileProbes compiles the regular expressions of the probes, which only
-// Find needs.
+// compileProbes compiles the regular expressions of the probes and the index
+// of the rules, which only Find needs.
 func (m *Matcher) compileProbes() {
 	for i := range m.probes {
 		if p := &m.probes[i]; p.rule.Kind == RuleRegexp {
 			p.re, _ = regexp.Compile("(?i)" + p.rule.Value)
 		}
 	}
+	m.explain = newExplainIndex(m.probes)
 }
 
 func (p *probe) match(t target) bool {

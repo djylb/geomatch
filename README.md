@@ -55,6 +55,13 @@ func route(m *geomatch.Matcher, target string) string {
 `geomatch.Compile` compiles rules without geodata, and `MustCompile` panics
 on an invalid rule, for rules fixed in a program.
 
+Rules are written as common routing rule lists write them, so such lists
+work as they are. Mind that a domain written without a kind, such as
+`example.com`, is a keyword: it matches every host that contains the text,
+`notexample.com` and `example.com.evil.net` too. Write `domain:example.com`
+for the domain and its subdomains, or set `Compiler.PlainDomain` for rules
+that your users write; see [Restricting rules](#restricting-rules).
+
 Every query comes in five forms, by what the caller holds. `Levels` have the
 methods of `Policy`, and a `Router` has `Route…` and, with the rule, `Find…`
 in the same forms:
@@ -70,8 +77,15 @@ in the same forms:
 `net.Addr` values are matched without formatting them. `MatchHostIP` matches
 if either the name or the address does, so that an allowlist of `geoip:`
 rules allows a host by where it resolves. `HostOf` extracts the host that
-`Match` uses from an address or URL. Hosts and rules are ASCII: write
-internationalized names in their `xn--` form, as geosite files do.
+`Match` uses from an address or URL, ending it at a backslash as browsers do.
+Names are matched in their ASCII form, as TLS, DNS and geosite files hold
+them: internationalized names in queries, and in the domains of `full:`,
+`domain:` and `*` rules, are converted to their `xn--` form, with full-width
+dots read as dots; `keyword:`, `regexp:` and `dotless:` rules are text that
+must be ASCII. A host in the legacy forms of IPv4 that system
+resolvers accept, such as `127.1`, `2130706433` or `0x7f.0.0.1`, is matched
+as the address it stands for, so that a denylist of addresses cannot be
+passed by spelling one differently.
 
 ### Allowing and denying
 
@@ -98,10 +112,10 @@ if d := denylist.DecideNetAddr(conn.RemoteAddr()); !d.Allowed {
 | both, `AllowFirst`        | allowed       | denied       | allowed | allowed    |
 | neither (zero `Policy`)   |               |              |         | allowed    |
 
-`Allow` and `Deny` take any `MatcherSource`: a `*Matcher`, a `*Live`, or a
-type of your own whose `Matcher` method returns the current rules, such as a
-set of addresses that clients register at run time, rebuilt with
-`CompileRules` when it changes.
+`Allow` and `Deny` take any `MatcherSource`: a `*Matcher`, a `*Live`, an
+`*IPSet`, a set of prefixes that changes while it is used, such as the
+addresses that clients register at run time, or a type of your own whose
+`Matcher` method returns the current rules.
 
 `HasIPRules` and `HasDomainRules`, on a `Policy`, `Levels` or `Matcher`,
 tell whether rules of that kind exist, so that a program resolves a host's
@@ -116,11 +130,11 @@ allowed := levels.AllowsHostIP(host, ip)
 ```
 
 So a denylist with exceptions is `Deny` and `Allow` with `AllowFirst`, and an
-allowlist with exceptions `Allow` and `Deny` with `DenyFirst`. A list that is
-nil or compiled from no rules is not set, so compiling every list of a
-configuration is enough; a list whose rules were all skipped, such as for
-missing geodata, is set and matches nothing, so that an allowlist fails
-closed. Either list may be a `Live`, which the policy follows as geodata
+allowlist with exceptions `Allow` and `Deny` with `DenyFirst`. Only a nil
+list is not set: leave the list nil when configuration has none. Any
+`Matcher` is a set list, also one whose rules were all skipped, rejected or
+filtered out by `ParseRules`, so that an allowlist of rules that fail allows
+nothing. Either list may be a `Live`, which the policy follows as geodata
 changes.
 
 `Mode` (`ModeOff`, `ModeAllowlist`, `ModeDenylist`) and `Priority`
@@ -134,17 +148,33 @@ type ACL struct {
 	Mode  geomatch.Mode   `json:"mode"`  // "allowlist", "denylist" or "off"
 	Rules []geomatch.Rule `json:"rules"` // ["geoip:cn", "domain:example.com"]
 }
-m, err := compiler.CompileRules(acl.Rules)
-p := acl.Mode.Policy(m)
+
+func (acl ACL) Policy() (geomatch.Policy, error) {
+	m, err := compiler.CompileRules(acl.Rules)
+	// Even with err, m holds the rules that compiled, and an allowlist of
+	// none allows nothing.
+	return acl.Mode.Policy(m), err
+}
 
 type Lists struct {
 	Allow    []geomatch.Rule   `json:"allow"`
 	Deny     []geomatch.Rule   `json:"deny"`
 	Priority geomatch.Priority `json:"priority"` // "deny-first" (default) or "allow-first"
 }
-allow, _ := compiler.CompileRules(lists.Allow)
-deny, _ := compiler.CompileRules(lists.Deny)
-p := geomatch.Policy{Allow: allow, Deny: deny, Priority: lists.Priority}
+
+func (l Lists) Policy() (geomatch.Policy, error) {
+	p := geomatch.Policy{Priority: l.Priority}
+	var errs []error
+	if l.Allow != nil { // a list that configuration lacks stays nil
+		m, err := compiler.CompileRules(l.Allow)
+		p.Allow, errs = m, append(errs, err)
+	}
+	if l.Deny != nil {
+		m, err := compiler.CompileRules(l.Deny)
+		p.Deny, errs = m, append(errs, err)
+	}
+	return p, errors.Join(errs...)
+}
 ```
 
 ### Levels
@@ -158,6 +188,9 @@ per-client and per-resource ones, in one of two ways:
   levels after it either way. List the levels most authoritative first, or
   most specific first for settings that override general ones. Addresses
   that no level's rules match are allowed, or denied with `DenyUnmatched`.
+  A level's `Allow` then allows what it matches and leaves the rest to the
+  next levels rather than denying it: a user level of `Allow: full:a.com`
+  does not deny `b.com`.
 
 A level that is not set, the zero `Policy`, changes nothing either way.
 `Decision.Level` tells which level decided, and a `Policy` with a `Name`
@@ -217,9 +250,10 @@ from changed or appeared, and `Matcher.Sources` lists those files.
 `GeoData.SetFiles` changes the files while the program runs, such as when
 configuration is reloaded; Matchers of the old files then report `Stale`.
 `GeoData.Check` looks at every file it has read and returns a generation
-that grows when one changed. `GeoData.LoadIP`, `LoadSite`, `IPCodes` and
-`SiteCodes` read the files directly, for example to list the categories a
-geosite file offers.
+that grows when one changed. `GeoData.LoadIP`, `LoadSite`, `IPCodes`,
+`SiteCodes` and `SiteAttrs` read the files directly, for example to list the
+categories and attributes a geosite file offers; they name files as `ext:`
+rules do.
 
 ### Updating geodata while running
 
@@ -230,6 +264,9 @@ replaces it whole, so no query mixes old and new data:
 
 ```go
 live, err := geomatch.NewLive(compiler, rules)
+if err != nil {
+	log.Print(err) // rules skipped; live holds the others
+}
 go live.Watch(ctx, time.Minute, func(replaced bool, err error) {
 	log.Printf("geodata reloaded: %v, %v", replaced, err)
 })
@@ -246,19 +283,22 @@ p.Allows(addr)
 rules. A program with many `Live`s on one `GeoData`, such as one for each
 user, refreshes them all with one goroutine, which looks at each file once
 per round and recompiles only the `Live`s whose files changed; a `Live` the
-program drops leaves it by itself:
+program drops leaves it by itself. `Live.SetTag` names a `Live` for the
+report, and each broken file is reported once however many `Live`s it
+broke:
 
 ```go
-go geo.WatchLives(ctx, time.Minute, func(l *geomatch.Live, replaced bool, err error) {
-	if err != nil {
-		log.Printf("geodata: %v", err)
+go geo.WatchLives(ctx, time.Minute, func(r geomatch.RefreshResult) {
+	for _, err := range r.Errors {
+		log.Printf("geodata: %v (kept the rules of %d lists)", err, len(r.Failed))
 	}
 })
 ```
 
 If new geodata breaks a rule that compiled before, such as a file removed or
 replaced by a broken one, `Live` keeps the previous `Matcher` and reports the
-error, and tries again once the files change. Replace a file by renaming a
+error, which `Live.RefreshErr` returns for health checks, and tries again
+once the files change. Replace a file by renaming a
 new one over it rather than writing it in place, so that no compile reads it
 half written.
 
@@ -320,8 +360,10 @@ the rules of a `Matcher`. `ParseRule` fails with a `*RuleError`, and
 `ParseRules` with a `RuleErrors` of them:
 
 ```go
+// validate checks rules that users write against the restrictions of
+// users, the Compiler that will compile them.
 func validate(text string) error {
-	_, err := geomatch.ParseRules(geomatch.SplitLines(text))
+	_, err := users.ParseRules(geomatch.SplitLines(text))
 	var errs geomatch.RuleErrors
 	if errors.As(err, &errs) {
 		e := errs[0]
@@ -338,8 +380,9 @@ split.
 
 A `Rule` reads and writes itself as text, so configuration can hold
 `[]geomatch.Rule`, checked as it is decoded, in JSON, YAML or any format that
-uses `encoding.TextUnmarshaler`; the `Compiler`'s restrictions apply when
-`CompileRules` compiles them.
+uses `encoding.TextUnmarshaler`; the `Compiler`'s restrictions and
+`PlainDomain` apply when `CompileRules` compiles them, as a domain written
+without a kind stays so (`Rule.Plain`).
 
 ## Rules
 
@@ -368,7 +411,12 @@ a colon, hosts may be written as URLs or `host:port`, and lines starting with
 `#` or `;` are comments. Relative file names of `ext` rules are looked up in
 `GeoFiles.Dir`, or next to the default file of the rule's kind, or the other
 one, or in the root of `FS`, never in the working directory. IP rules never
-match domain
-names and domain rules never match IP addresses; IPv4-mapped IPv6 addresses
-match as IPv4. `regexp:` matches regardless of case, and `dotless:` takes
-plain text.
+match domain names and domain rules never match IP addresses; IPv4-mapped
+IPv6 addresses match as IPv4. `regexp:` matches regardless of case,
+`dotless:` takes plain text without a dot, and an attribute after `@` must
+not be empty. Domains of `full:`, `domain:` and `*` rules may be written as
+internationalized names, which are converted to their `xn--` form; rules that
+no host could match are invalid rather than silently dead: non-ASCII
+`keyword:`, `regexp:` and `dotless:` text, and domains that are IPv4
+addresses in a legacy form, such as `127.1`, which queries read as
+addresses.
