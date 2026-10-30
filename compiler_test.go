@@ -25,7 +25,7 @@ func TestKindSet(t *testing.T) {
 			t.Errorf("DomainKinds.Has(%v)", k)
 		}
 	}
-	if zero.Has(0) || AllKinds.Has(RuleExt+1) {
+	if zero.Has(0) || AllKinds.Has(RulePort+1) {
 		t.Error("Has of an unknown kind")
 	}
 	if s := KindsOf(RuleIP, RuleRegexp); !s.Has(RuleRegexp) || s.Has(RuleKeyword) {

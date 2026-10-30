@@ -121,7 +121,8 @@ func TestCompileRules(t *testing.T) {
 	for addr, want := range map[string]bool{
 		"192.0.2.1":                true,
 		"192.0.2.2":                false,
-		"[2001:db8::7]:80":         true,
+		"[2001:db8::7]:443":        true,
+		"[2001:db8::7]:80":         false, // the rule's port is 443
 		"10.255.0.1:22":            true,
 		"::ffff:10.1.1.1":          true,
 		"172.16.9.9":               true,

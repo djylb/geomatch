@@ -37,7 +37,7 @@ func TestRuleValuesAreNotHosts(t *testing.T) {
 	if m.Match("corpus.example") || !m.Match("evilcorp.example") {
 		t.Fatal("keyword: lost its trailing dot")
 	}
-	for _, rule := range []string{"domain:user@example.com", "full:example.com:443", "domain:exa%mple.com", "*.a/b"} {
+	for _, rule := range []string{"domain:user@example.com", "full:example.com:x", "domain:exa%mple.com", "*.a/b"} {
 		if _, err := Compile([]string{rule}); err == nil {
 			t.Errorf("Compile(%q) accepted a value that is not a host", rule)
 		}

@@ -18,7 +18,7 @@
 //
 // IP rules:
 //
-//	192.0.2.1, [2001:db8::1]   an address, optionally with a port
+//	192.0.2.1, [2001:db8::1]   an address
 //	10.0.0.0/8, 2001:db8::/32  a CIDR prefix
 //	10.*, 192.168.*.*          an IPv4 address whose trailing octets are *
 //	geoip:cn                   an entry of the geoip file, by code
@@ -44,7 +44,9 @@
 // ext:file.dat:code reads an entry of either kind, telling the formats apart
 // by their contents. Rule kinds are case-insensitive, a full-width colon is
 // read as a colon, and lines starting with # or ; are comments. Hosts may be
-// written as URLs or host:port.
+// written as URLs. Rules but regexp: and ext ones may end in ports, as in
+// example.com:443 or 10.0.0.0/8:22,3389, which queries with a port match;
+// 10.0.0.1-10.0.0.50 is an address range, and *:25 every address on a port.
 //
 // Compile compiles rules without geodata. A Compiler reads geodata, and can
 // allow only some rule kinds, keep ext: rules to local files and limit the

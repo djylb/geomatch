@@ -62,17 +62,18 @@ work as they are. Mind that a domain written without a kind, such as
 for the domain and its subdomains, or set `Compiler.PlainDomain` for rules
 that your users write; see [Restricting rules](#restricting-rules).
 
-Every query comes in five forms, by what the caller holds. `Levels` have the
+Every query comes in these forms, by what the caller holds. `Levels` have the
 methods of `Policy`, and a `Router` has `Route…` and, with the rule, `Find…`
 in the same forms:
 
-| Input                                   | `Matcher`      | `Matcher`, with the rule | `Policy`        | `Policy`, with the rule |
-|-----------------------------------------|----------------|--------------------------|-----------------|-------------------------|
-| address, `host:port` or URL (`string`)  | `Match`        | `Find`                   | `Allows`        | `Decide`                |
-| `netip.Addr`                            | `MatchIP`      | `FindIP`                 | `AllowsIP`      | `DecideIP`              |
-| domain name, never read as an IP        | `MatchDomain`  | `FindDomain`             | `AllowsDomain`  | `DecideDomain`          |
-| `net.Addr`, such as a `RemoteAddr`      | `MatchNetAddr` | `FindNetAddr`            | `AllowsNetAddr` | `DecideNetAddr`         |
-| domain name and the IP it resolved to   | `MatchHostIP`  | `FindHostIP`             | `AllowsHostIP`  | `DecideHostIP`          |
+| Input                                  | `Matcher`       | `Matcher`, with the rule | `Policy`         | `Policy`, with the rule |
+|----------------------------------------|-----------------|--------------------------|------------------|-------------------------|
+| address, `host:port` or URL (`string`) | `Match`         | `Find`                   | `Allows`         | `Decide`                |
+| `netip.Addr`                           | `MatchIP`       | `FindIP`                 | `AllowsIP`       | `DecideIP`              |
+| domain name, never read as an IP       | `MatchDomain`   | `FindDomain`             | `AllowsDomain`   | `DecideDomain`          |
+| `net.Addr`, such as a `RemoteAddr`     | `MatchNetAddr`  | `FindNetAddr`            | `AllowsNetAddr`  | `DecideNetAddr`         |
+| domain name and the IP it resolved to  | `MatchHostIP`   | `FindHostIP`             | `AllowsHostIP`   | `DecideHostIP`          |
+| address and port (`netip.AddrPort`)    | `MatchAddrPort` | `FindAddrPort`           | `AllowsAddrPort` | `DecideAddrPort`        |
 
 `net.Addr` values are matched without formatting them. `MatchHostIP` matches
 if either the name or the address does, so that an allowlist of `geoip:`
@@ -302,6 +303,88 @@ once the files change. Replace a file by renaming a
 new one over it rather than writing it in place, so that no compile reads it
 half written.
 
+### Ports
+
+**Migration.** Rules that name a port now match that port only, and rules
+with ports decide only queries that carry a port:
+
+- A deny rule `10.0.0.5:22` used to deny the whole host; it now denies port
+  22 only. Write `10.0.0.5` to deny every port.
+- Queries without a port, such as `AllowsIP` or a bare host, are not
+  restricted by rules with ports: a deny rule with ports does not match them.
+- `Allow: *:443`, like any allow rule with ports, admits queries without a
+  port. Pass the port, as with `AllowsAddrPort`, wherever it is known.
+- A bare `Matcher` matches a query whose port cannot be read, such as
+  `example.com:+22`, by address, so that a denylist fails closed; used as an
+  allowlist it would then admit it. Use a `Policy` with `Allow`, which reads
+  such ports the other way round.
+
+Rules may name ports, address ranges, and ports of every address:
+
+```go
+m, err := compiler.Compile([]string{
+	"example.com:443",
+	"10.0.0.0/8:22,3389",
+	"[2001:db8::/32]:1000-2000",
+	"10.0.0.1-10.0.0.50",
+	"geoip:cn:25",
+	"*:8000-9000",
+})
+m.Match("example.com:443")                                 // true
+m.MatchAddrPort(netip.MustParseAddrPort("10.1.2.3:3389")) // true
+```
+
+A rule without ports matches every port. A query is matched by its port when
+it has one: the port of a `host:port` or `[IPv6]:port` string, of a URL,
+written or the default of `http`, `https`, `ws`, `wss` and `ftp`, of a
+`*net.TCPAddr` or `*net.UDPAddr`, and of a `netip.AddrPort`. Queries without
+a port, such as a bare host, a `netip.Addr` or a `*net.IPAddr`, leave the
+port open, so that a program that checks addresses only is not denied by
+port rules; a port that cannot be read, such as `host:https`, is denied
+either way:
+
+| Rule with ports in          | query port in the rule's | other port | no port   | port that cannot be read |
+|-----------------------------|--------------------------|------------|-----------|--------------------------|
+| `Matcher`, `Router`, `Deny` | matches                  | no match   | no match  | matches                  |
+| `Allow` of a `Policy`       | matches                  | no match   | matches   | no match                 |
+
+So a policy with `Allow: example.com:443` allows `example.com`, and reports
+that rule from `Decide`, and one with `Allow: *:443` allows every address
+without a port; pass the port wherever it is known. `HasPortRules`, on a
+`Matcher`, `Policy` or `Levels`, tells whether a port could change an answer.
+
+The syntax adds to that of the [rules table](#rules):
+
+```
+rule      = kind ":" value [":" ports]     ; full, domain, keyword, dotless
+          | "geoip:" ["!"] code [":" ports]
+          | "geosite:" code *("@" attr) [":" ports]
+          | "regexp:" pattern               ; no ports: a pattern may hold ":"
+          | ext-kind ":" file ":" code      ; ext, ext-ip, ext-domain: no ports
+          | "*:" ports                      ; every address on the ports
+          | "[" ip "]" [":" ports]          ; brackets for IPv6 with ports, allowed for IPv4
+          | ip-no-brackets                  ; IPv6 without brackets never has ports
+          | host [":" ports]                ; IPv4, CIDR, IPv4 range, 10.*, domain, *domain, *.domain, .domain
+          | url                             ; scheme://host[:port]/…, //host[:port]/…
+ip        = address | cidr | address "-" address   ; one family, first ≤ last
+ports     = item *("," item)
+item      = port | port "-" port            ; decimal 0–65535
+```
+
+Ports are sorted and merged, `0-65535` is no port condition but in `*:`, a
+range that is one CIDR prefix is written as it, and `String` writes IPv6
+with ports in brackets. A URL rule takes its written port only. `keyword:`
+and `dotless:` text cannot hold `:`, and a domain named as a rule kind, such
+as `geoip`, needs a kind when it has ports. Errors in ports and ranges are a
+`*SyntaxError`, whose `Offset` is the byte in the rule where it failed:
+`geomatch: rule "10.0.0.0/8:22,99999": at byte 14: port 99999 out of range`.
+`Rule.Ports`, `Rule.Last`, the end of an address range, and `RulePort` write
+and read themselves as text like other rules.
+
+Earlier versions read the port of a rule such as `example.com:443` or
+`[2001:db8::1]:443` and dropped it, and rejected address ranges; such rules
+now match their port only.
+
 ### Restricting rules
 
 A `Compiler` can restrict the rules it accepts, for example for rules that
@@ -346,8 +429,9 @@ and its subdomains, not any name that ends in the text:
 users.PlainDomain = geomatch.RuleDomain // "example.com" is domain:example.com
 ```
 
-A misspelt kind, such as `ful:example.com`, and an IP range, such as
-`1.1.1.1-1.1.1.5`, are invalid rather than read as keywords.
+A misspelt kind, such as `ful:example.com`, and an IP range that does not
+parse, such as `1.1.1.1-1.1.1.300`, are invalid rather than read as
+keywords.
 
 ### Parsed rules
 
@@ -388,8 +472,9 @@ without a kind stays so (`Rule.Plain`).
 
 | Rule                                    | Matches                                                       | Kind            |
 |-----------------------------------------|---------------------------------------------------------------|-----------------|
-| `192.0.2.1`, `[2001:db8::1]:443`        | the address                                                   | `RuleIP`        |
+| `192.0.2.1`, `2001:db8::1`              | the address                                                   | `RuleIP`        |
 | `10.0.0.0/8`, `2001:db8::/32`           | the CIDR prefix                                               | `RuleIP`        |
+| `10.0.0.1-10.0.0.50`                    | the addresses from the first to the last                      | `RuleIP`        |
 | `10.*`, `192.168.*.*`                   | IPv4 addresses with those leading octets                      | `RuleIP`        |
 | `geoip:cn`                              | an entry of the geoip file, `GeoFiles.IP`                     | `RuleGeoIP`     |
 | `geoip:!cn`                             | every address outside that entry                              | `RuleGeoIP`     |
@@ -405,9 +490,13 @@ without a kind stays so (`Rule.Plain`).
 | `geosite:google@cn@ads`                 | its domains having every listed attribute                     | `RuleGeoSite`   |
 | `ext-domain:file.dat:code`              | an entry of another geosite file                              | `RuleGeoSite`   |
 | `ext:file.dat:code`                     | an entry of either kind, told apart by the file's contents    | `RuleExt`       |
+| `*:25`, `*:8000-9000`                   | every address on the ports                                    | `RulePort`      |
+
+Rules but `regexp:` and `ext` ones may end in ports, as in `example.com:443`,
+`10.0.0.0/8:22,3389` or `[2001:db8::/32]:1000-2000`; see [Ports](#ports).
 
 Rule kinds and codes are case-insensitive, a full-width colon (`：`) is read as
-a colon, hosts may be written as URLs or `host:port`, and lines starting with
+a colon, hosts may be written as URLs, and lines starting with
 `#` or `;` are comments. Relative file names of `ext` rules are looked up in
 `GeoFiles.Dir`, or next to the default file of the rule's kind, or the other
 one, or in the root of `FS`, never in the working directory. IP rules never

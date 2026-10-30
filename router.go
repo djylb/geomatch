@@ -18,10 +18,12 @@ import (
 //		Default: "proxy",
 //	}
 //
-// Like those of Matcher, its methods come in five forms, by the kind of
+// Like those of Matcher, its methods come in six forms, by the kind of
 // address. Route returns the target, and Find also which route and rule
-// decided, at more cost when a route matches. A Router is safe for
-// concurrent use while its fields are not changed.
+// decided, at more cost when a route matches. Rules with ports match as
+// Matcher matches them: a query without a port takes no route by a rule
+// with ports. A Router is safe for concurrent use while its fields are not
+// changed.
 type Router[T any] struct {
 	Routes  []Route[T]
 	Default T
@@ -63,6 +65,10 @@ func (r Router[T]) Route(addr string) T { return r.route(addrTarget(addr)) }
 // RouteIP returns the target of ip.
 func (r Router[T]) RouteIP(ip netip.Addr) T { return r.route(ipTarget(ip)) }
 
+// RouteAddrPort returns the target of an address and port, as
+// Matcher.MatchAddrPort reads them.
+func (r Router[T]) RouteAddrPort(ap netip.AddrPort) T { return r.route(addrPortTarget(ap)) }
+
 // RouteDomain returns the target of host, as Matcher.MatchDomain reads it.
 func (r Router[T]) RouteDomain(host string) T { return r.route(domainTarget(host)) }
 
@@ -82,6 +88,9 @@ func (r Router[T]) Find(addr string) Routed[T] { return r.find(addrTarget(addr))
 // FindIP is Find for an IP address.
 func (r Router[T]) FindIP(ip netip.Addr) Routed[T] { return r.find(ipTarget(ip)) }
 
+// FindAddrPort is Find for an address and port.
+func (r Router[T]) FindAddrPort(ap netip.AddrPort) Routed[T] { return r.find(addrPortTarget(ap)) }
+
 // FindDomain is Find for a domain name.
 func (r Router[T]) FindDomain(host string) Routed[T] { return r.find(domainTarget(host)) }
 
@@ -95,7 +104,7 @@ func (r Router[T]) FindHostIP(host string, ip netip.Addr) Routed[T] {
 
 func (r Router[T]) route(t target) T {
 	for i := range r.Routes {
-		if r.Routes[i].matcher().match(t) {
+		if r.Routes[i].matcher().match(t, false) {
 			return r.Routes[i].Target
 		}
 	}
@@ -106,7 +115,7 @@ func (r Router[T]) find(t target) Routed[T] {
 	for i := range r.Routes {
 		// One Matcher for both steps, even if a Live replaces it meanwhile.
 		m := r.Routes[i].matcher()
-		if rule, ok := m.find(t); ok {
+		if rule, ok := m.find(t, false); ok {
 			return Routed[T]{Target: r.Routes[i].Target, Matched: true, Index: i, Rule: rule}
 		}
 	}

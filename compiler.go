@@ -46,11 +46,11 @@ type Compiler struct {
 // KindSet is a set of rule kinds. The zero KindSet stands for every kind.
 type KindSet uint32
 
-// Sets of rule kinds. RuleExt, whose kind depends on its file, is in
-// neither IPKinds nor DomainKinds.
+// Sets of rule kinds. RuleExt, whose kind depends on its file, and
+// RulePort, which matches both, are in neither IPKinds nor DomainKinds.
 const (
 	// AllKinds holds every kind.
-	AllKinds KindSet = 1<<(RuleExt+1) - 1<<RuleIP
+	AllKinds KindSet = 1<<(RulePort+1) - 1<<RuleIP
 	// IPKinds holds the kinds that match IP addresses only, for rules about
 	// addresses such as those of clients.
 	IPKinds KindSet = 1<<RuleIP | 1<<RuleGeoIP
@@ -87,7 +87,7 @@ func (s KindSet) Without(kinds ...RuleKind) KindSet {
 // kind.
 func (s KindSet) String() string {
 	var names []string
-	for k := RuleIP; k <= RuleExt; k++ {
+	for k := RuleIP; k <= RulePort; k++ {
 		if s.Has(k) {
 			names = append(names, k.String())
 		}
@@ -100,7 +100,7 @@ func (s KindSet) String() string {
 
 // Has reports whether s holds k; the zero KindSet holds every kind.
 func (s KindSet) Has(k RuleKind) bool {
-	if k < RuleIP || k > RuleExt {
+	if k < RuleIP || k > RulePort {
 		return false
 	}
 	return s == 0 || s&(1<<k) != 0
@@ -240,24 +240,29 @@ func (c Compiler) Normalize(rules []string) ([]string, error) {
 
 // Compile is the package's Compile with the settings of c.
 func (c Compiler) Compile(rules []string) (*Matcher, error) {
-	return c.compile(len(rules), func(i int) string { return rules[i] }, false)
+	return c.compile(len(rules), func(rd *ruleReader, i int) (string, Rule, error) {
+		r, err := rd.read(rules[i])
+		return rules[i], r, err
+	}, false)
 }
 
 // CompileRules is the package's CompileRules with the settings of c.
 func (c Compiler) CompileRules(rules []Rule) (*Matcher, error) {
-	return c.compile(len(rules), func(i int) string { return rules[i].String() }, true)
+	return c.compile(len(rules), func(rd *ruleReader, i int) (string, Rule, error) {
+		r, err := rd.readRule(rules[i])
+		return rules[i].String(), r, err
+	}, true)
 }
 
-// compile compiles n rules, rule i written as text(i). Empty rules and
-// comments are skipped as written text, but are errors for parsed rules,
-// whose errors quote them as String writes them.
-func (c Compiler) compile(n int, text func(int) string, parsed bool) (*Matcher, error) {
+// compile compiles n rules, rule i read by read. Empty rules and comments
+// are skipped as written text, but are errors for parsed rules, whose
+// errors quote them as String writes them.
+func (c Compiler) compile(n int, read func(*ruleReader, int) (string, Rule, error), parsed bool) (*Matcher, error) {
 	b := newBuilder(c.GeoData)
 	rd := c.reader(b.view)
 	var errs RuleErrors
 	for i := range n {
-		s := text(i)
-		r, err := rd.read(s)
+		s, r, err := read(rd, i)
 		if !parsed {
 			if errors.Is(err, errNoRule) {
 				continue
@@ -301,7 +306,7 @@ func (rd *ruleReader) read(s string) (Rule, error) {
 	if isComment(s) {
 		return Rule{}, errNoRule
 	}
-	c, lim := rd.c, &rd.c.Limits
+	lim := &rd.c.Limits
 	if n := len(trimRule(s)); lim.MaxRuleLen > 0 && n > lim.MaxRuleLen {
 		return Rule{}, fmt.Errorf("%w: %d bytes, more than %d", ErrLimit, n, lim.MaxRuleLen)
 	}
@@ -312,25 +317,60 @@ func (rd *ruleReader) read(s string) (Rule, error) {
 	if err != nil {
 		return Rule{}, withClass(err, ErrInvalidRule)
 	}
+	return r, rd.accept(r)
+}
+
+// readRule checks a parsed rule as read does its String form, which reads
+// as the same rule; it rejects first what String could not write so.
+func (rd *ruleReader) readRule(r Rule) (Rule, error) {
+	var err error
+	switch {
+	case r.Last.IsValid() && (r.Kind != RuleIP || !r.Prefix.IsSingleIP()):
+		err = errors.New("an address range that does not start at an address")
+	case len(r.Ports) > 0 && !portsAllowed(&r):
+		err = fmt.Errorf("ports on a %v rule", ruleKindText(&r))
+	case (r.Kind == RuleKeyword || r.Kind == RuleDotless) && strings.Contains(r.Value, ":"):
+		err = fmt.Errorf("%v text with a colon, which starts ports", r.Kind)
+	}
+	if err != nil {
+		return Rule{}, withClass(err, ErrInvalidRule)
+	}
+	return rd.read(r.String())
+}
+
+// ruleKindText names the kind of r as its text starts.
+func ruleKindText(r *Rule) string {
+	switch {
+	case r.Kind == RuleGeoIP && r.File != "":
+		return "ext-ip"
+	case r.Kind == RuleGeoSite && r.File != "":
+		return "ext-domain"
+	}
+	return r.Kind.String()
+}
+
+// accept checks a rule that parsed against the settings and counts it.
+func (rd *ruleReader) accept(r Rule) error {
+	c, lim := rd.c, &rd.c.Limits
 	if !c.Kinds.Has(r.Kind) {
-		return Rule{}, &KindError{Kind: r.Kind, Allowed: c.Kinds}
+		return &KindError{Kind: r.Kind, Allowed: c.Kinds}
 	}
 	if r.File != "" {
 		if err := c.ExtFiles.check(r.File, rd.view); err != nil {
-			return Rule{}, err
+			return err
 		}
 	}
 	if lim.MaxRules > 0 && rd.rules >= lim.MaxRules {
-		return Rule{}, fmt.Errorf("%w: more than %d rules", ErrLimit, lim.MaxRules)
+		return fmt.Errorf("%w: more than %d rules", ErrLimit, lim.MaxRules)
 	}
 	if r.Kind == RuleRegexp {
 		if lim.MaxRegexps > 0 && rd.regexps >= lim.MaxRegexps {
-			return Rule{}, fmt.Errorf("%w: more than %d regexp: rules", ErrLimit, lim.MaxRegexps)
+			return fmt.Errorf("%w: more than %d regexp: rules", ErrLimit, lim.MaxRegexps)
 		}
 		rd.regexps++
 	}
 	rd.rules++
-	return r, nil
+	return nil
 }
 
 // localFile reports whether name stays within the directory it is looked up

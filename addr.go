@@ -17,14 +17,23 @@ import (
 // accept, such as 127.1, 2130706433 or 0x7f.0.0.1, as the IPv4 address it
 // stands for, so that IP rules see the address a program would connect to.
 func HostOf(addr string) string {
+	host, _ := hostPortOf(addr)
+	return host
+}
+
+// hostPortOf returns the host of addr as HostOf does, and its port as
+// target.port holds it: the port after host: or [IPv6]:, or the default
+// port of a URL's scheme.
+func hostPortOf(addr string) (string, int32) {
 	if isPlainHost(addr) {
-		return addr
+		return addr, 0
 	}
 	s := strings.TrimSpace(addr)
 	// A scheme ends before the first /, ? or #; a :// later on belongs to
 	// a path or query, such as a redirect target.
+	scheme := ""
 	if i := strings.Index(s, "://"); i >= 0 && !strings.ContainsAny(s[:i], "/?#\\") {
-		s = s[i+3:]
+		scheme, s = s[:i], s[i+3:]
 	} else if rest, ok := strings.CutPrefix(s, "//"); ok {
 		s = rest // a scheme-relative URL
 	}
@@ -36,16 +45,16 @@ func HostOf(addr string) string {
 	if i := strings.LastIndexByte(s, '@'); i >= 0 {
 		s = s[i+1:]
 	}
-	ipv6 := false
+	ipv6, port := false, ""
 	if strings.HasPrefix(s, "[") {
 		i := strings.IndexByte(s, ']')
 		if i < 0 {
-			return ""
+			return "", 0
 		}
-		s, ipv6 = s[1:i], true
+		s, port, ipv6 = s[1:i], s[i+1:], true
 	} else if i := strings.IndexByte(s, ':'); i >= 0 {
 		if strings.LastIndexByte(s, ':') == i {
-			s = s[:i] // host:port
+			s, port = s[:i], s[i:] // host:port
 		} else {
 			ipv6 = true // a bare IPv6 address has several colons
 		}
@@ -54,7 +63,26 @@ func HostOf(addr string) string {
 		s = s[:i] // zone
 	}
 	host, _ := normalHost(s) // "" for invalid UTF-8: no host
-	return host
+	switch {
+	case scheme != "":
+		return host, portField(scheme, port)
+	case port == "":
+		return host, 0
+	case len(port) <= 6 && port[0] == ':':
+		// The common host:port, read here rather than by a call.
+		v := int32(0)
+		for i := 1; i < len(port); i++ {
+			d := port[i] - '0'
+			if d > 9 {
+				return host, -1
+			}
+			v = v*10 + int32(d)
+		}
+		if v <= 65535 && len(port) > 1 {
+			return host, v + 1
+		}
+	}
+	return host, portField(scheme, port)
 }
 
 // isPlainHost reports whether s is already a normalized host name or IPv4
@@ -74,20 +102,35 @@ func isPlainHost(s string) bool {
 }
 
 // target is what a query matches: an IP address, unmapped and without a
-// zone, and a normalized host name. Either may be missing; the zero target
-// matches nothing.
+// zone, a normalized host name, and a port. Any may be missing; the zero
+// target matches nothing.
 type target struct {
 	host string
 	ip   netip.Addr
+	// port is the port + 1, 0 for none, or -1 for one that cannot be read;
+	// portOf reads it.
+	port int32
 }
 
-// addrTarget reads the host of addr, as its IP address if it is one.
-func addrTarget(addr string) target {
-	host := HostOf(addr)
-	if ip, ok := hostIP(host); ok {
-		return target{ip: ip}
+// portOf returns the port of t: a port, portNone or portBad.
+func (t *target) portOf() int32 {
+	switch {
+	case t.port > 0:
+		return t.port - 1
+	case t.port == 0:
+		return portNone
 	}
-	return target{host: host}
+	return portBad
+}
+
+// addrTarget reads the host of addr, as its IP address if it is one, and
+// its port.
+func addrTarget(addr string) target {
+	host, port := hostPortOf(addr)
+	if ip, ok := hostIP(host); ok {
+		return target{ip: ip, port: port}
+	}
+	return target{host: host, port: port}
 }
 
 // hostIP parses host, as HostOf returns it, as an IP address: a host with a
@@ -186,14 +229,27 @@ func ipTarget(ip netip.Addr) target {
 	return target{ip: normalAddr(ip)}
 }
 
+func addrPortTarget(ap netip.AddrPort) target {
+	return target{ip: normalAddr(ap.Addr()), port: int32(ap.Port()) + 1}
+}
+
+// netPort returns the port of a *net.TCPAddr or *net.UDPAddr as
+// target.port holds it.
+func netPort(port int) int32 {
+	if port < 0 || port > 65535 {
+		return -1
+	}
+	return int32(port) + 1
+}
+
 // domainTarget reads host as a domain name only: an IP address, also in a
 // legacy form, is no target.
 func domainTarget(host string) target {
-	host = HostOf(host)
-	if _, ok := hostIP(host); ok {
+	name, port := hostPortOf(host)
+	if _, ok := hostIP(name); ok {
 		return target{}
 	}
-	return target{host: host}
+	return target{host: name, port: port}
 }
 
 // hostIPTarget reads a domain name and an IP address, such as the one it
@@ -211,9 +267,15 @@ func netAddrTarget(a net.Addr) target {
 	case nil, *net.UnixAddr:
 		return target{}
 	case *net.TCPAddr:
-		return ipTarget(a.AddrPort().Addr())
+		if a == nil {
+			return target{}
+		}
+		return target{ip: normalAddr(a.AddrPort().Addr()), port: netPort(a.Port)}
 	case *net.UDPAddr:
-		return ipTarget(a.AddrPort().Addr())
+		if a == nil {
+			return target{}
+		}
+		return target{ip: normalAddr(a.AddrPort().Addr()), port: netPort(a.Port)}
 	case *net.IPAddr:
 		if a == nil {
 			return target{}

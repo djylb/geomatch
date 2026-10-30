@@ -21,13 +21,13 @@ func TestUnknownKind(t *testing.T) {
 		}
 	}
 	for s, want := range map[string]string{
-		"localhost:8080":       "localhost",
-		"example.com:443":      "example.com",
+		"localhost:8080":       "localhost:8080",
+		"example.com:443":      "example.com:443",
 		"https://Example.com/": "example.com",
 		"//example.com/x":      "example.com",
 		"2001:db8::1":          "2001:db8::1",
 		"fe80::1%eth0":         "fe80::1",
-		"[::1]:80":             "::1",
+		"[::1]:80":             "[::1]:80",
 	} {
 		if r, err := ParseRule(s); err != nil || r.String() != want {
 			t.Errorf("ParseRule(%q) = %v, %v; want %s", s, r, err, want)
@@ -35,8 +35,15 @@ func TestUnknownKind(t *testing.T) {
 	}
 }
 
-func TestIPRangeRejected(t *testing.T) {
-	for _, s := range []string{"1.1.1.1-1.1.1.5", "1.1.1.1 - 1.1.1.5", "2001:db8::1-2001:db8::9"} {
+func TestIPRanges(t *testing.T) {
+	// IP ranges are read as ranges, and those that do not parse are
+	// invalid rather than read as keywords.
+	for s, want := range map[string]string{"1.1.1.1-1.1.1.5": "1.1.1.1-1.1.1.5", "1.1.1.1 - 1.1.1.5": "1.1.1.1-1.1.1.5", "2001:db8::1-2001:db8::9": "2001:db8::1-2001:db8::9"} {
+		if r, err := ParseRule(s); err != nil || r.String() != want {
+			t.Errorf("ParseRule(%q) = %v, %v", s, r, err)
+		}
+	}
+	for _, s := range []string{"1.1.1.5-1.1.1.1", "1.1.1.1-1.1.1.300", "1.1.1.1-2001:db8::1"} {
 		if _, err := ParseRule(s); !errors.Is(err, ErrInvalidRule) {
 			t.Errorf("ParseRule(%q) = %v", s, err)
 		}
@@ -54,7 +61,7 @@ func TestPlainDomain(t *testing.T) {
 		RuleFull:    {{Kind: RuleFull, Value: "example.com", Plain: true}, {Kind: RuleSubdomain, Value: "example.com", Plain: true}},
 	} {
 		c := Compiler{PlainDomain: kind}
-		for i, s := range []string{"Example.com:443", ".example.com"} {
+		for i, s := range []string{"Example.com", ".example.com"} {
 			if r, err := c.ParseRule(s); err != nil || !reflect.DeepEqual(r, want[i]) {
 				t.Errorf("PlainDomain %v: ParseRule(%q) = %+v, %v; want %+v", kind, s, r, err, want[i])
 			}

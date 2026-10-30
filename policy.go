@@ -25,9 +25,17 @@ import (
 // Mode.Policy makes the Policy of configuration that has a mode and rules,
 // where an allowlist without rules allows nothing too.
 //
-// Like those of Matcher, its methods come in five forms, by the kind of
+// Like those of Matcher, its methods come in six forms, by the kind of
 // address. Allows reports whether an address is allowed, and Decide also
 // which rule decided, at more cost when a rule matches.
+//
+// Rules with ports (Rule.Ports) decide only addresses whose port the query
+// has: for an address without a port, such as a bare host or a netip.Addr,
+// a rule with ports of Deny does not match, and one of Allow matches by its
+// address, so that a program that checks addresses only is not denied by
+// ports; Decide then reports that rule of Allow. An address whose port
+// cannot be read, such as host:https, matches the rules with ports of Deny
+// by address and none of Allow, so that it is denied either way.
 type Policy struct {
 	// Name, if set, names the policy, as "global" or "user 7", in its
 	// Decisions and their text, such as for the levels of Levels.
@@ -68,6 +76,10 @@ func (p Policy) Allows(addr string) bool { return p.allows(addrTarget(addr)) }
 
 // AllowsIP reports whether the policy allows ip.
 func (p Policy) AllowsIP(ip netip.Addr) bool { return p.allows(ipTarget(ip)) }
+
+// AllowsAddrPort reports whether the policy allows the address and port of
+// ap, as Matcher.MatchAddrPort reads them.
+func (p Policy) AllowsAddrPort(ap netip.AddrPort) bool { return p.allows(addrPortTarget(ap)) }
 
 // AllowsDomain reports whether the policy allows host, as
 // Matcher.MatchDomain reads it.
@@ -126,6 +138,9 @@ func (p Policy) Decide(addr string) Decision { return p.decide(addrTarget(addr))
 // DecideIP is Decide for an IP address.
 func (p Policy) DecideIP(ip netip.Addr) Decision { return p.decide(ipTarget(ip)) }
 
+// DecideAddrPort is Decide for an address and port.
+func (p Policy) DecideAddrPort(ap netip.AddrPort) Decision { return p.decide(addrPortTarget(ap)) }
+
 // DecideDomain is Decide for a domain name.
 func (p Policy) DecideDomain(host string) Decision { return p.decide(domainTarget(host)) }
 
@@ -148,6 +163,13 @@ func (p Policy) HasIPRules() bool {
 // names.
 func (p Policy) HasDomainRules() bool {
 	return sourceMatcher(p.Allow).HasDomainRules() || sourceMatcher(p.Deny).HasDomainRules()
+}
+
+// HasPortRules reports whether a list of p has rules with ports, so that a
+// caller passes the port of an address only when it could change the
+// answer.
+func (p Policy) HasPortRules() bool {
+	return sourceMatcher(p.Allow).HasPortRules() || sourceMatcher(p.Deny).HasPortRules()
 }
 
 // lists returns the lists of p in the order they decide: the winning one
@@ -173,10 +195,10 @@ func isSet(s MatcherSource) bool {
 // it.
 func (p Policy) match(t target) (allowed, matched bool) {
 	first, second, firstAllows := p.lists()
-	if sourceMatcher(first).match(t) {
+	if sourceMatcher(first).match(t, firstAllows) {
 		return firstAllows, true
 	}
-	if sourceMatcher(second).match(t) {
+	if sourceMatcher(second).match(t, !firstAllows) {
 		return !firstAllows, true
 	}
 	return false, false
@@ -193,10 +215,10 @@ func (p Policy) allows(t target) bool {
 func (p Policy) find(t target) (Decision, bool) {
 	first, second, firstAllows := p.lists()
 	// One Matcher for both steps of find, even if a Live replaces it.
-	if rule, ok := sourceMatcher(first).find(t); ok {
+	if rule, ok := sourceMatcher(first).find(t, firstAllows); ok {
 		return Decision{Allowed: firstAllows, Matched: true, Rule: rule, Name: p.Name}, true
 	}
-	if rule, ok := sourceMatcher(second).find(t); ok {
+	if rule, ok := sourceMatcher(second).find(t, !firstAllows); ok {
 		return Decision{Allowed: !firstAllows, Matched: true, Rule: rule, Name: p.Name}, true
 	}
 	return Decision{}, false

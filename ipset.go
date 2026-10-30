@@ -86,6 +86,16 @@ func (b *ipSetBuilder) addPrefix(p netip.Prefix) {
 	b.v6 = append(b.v6, range6{u128{v.hi &^ mask.hi, v.lo &^ mask.lo}, u128{v.hi | mask.hi, v.lo | mask.lo}})
 }
 
+// addRange adds the addresses first to last, of one family and unmapped.
+func (b *ipSetBuilder) addRange(first, last netip.Addr) {
+	if first.Is4() {
+		lo, hi := first.As4(), last.As4()
+		b.v4 = append(b.v4, range4{binary.BigEndian.Uint32(lo[:]), binary.BigEndian.Uint32(hi[:])})
+		return
+	}
+	b.v6 = append(b.v6, range6{u128From(first), u128From(last)})
+}
+
 // build sorts and merges the ranges. The builder can be reused afterwards.
 func (b *ipSetBuilder) build() *ipSet {
 	s := &ipSet{}

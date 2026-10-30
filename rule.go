@@ -42,6 +42,9 @@ const (
 	// RuleExt matches an entry of File, which may be a geoip or a geosite
 	// file.
 	RuleExt
+	// RulePort matches every IP address and domain name on Ports, as in
+	// *:25 or *:8000-9000; without Ports it means every port.
+	RulePort
 )
 
 // String returns the name of k, the prefix of its rules: ip, geoip, full,
@@ -49,7 +52,7 @@ const (
 func (k RuleKind) String() string {
 	names := [...]string{RuleIP: "ip", RuleGeoIP: "geoip", RuleFull: "full", RuleDomain: "domain",
 		RuleSubdomain: "subdomain", RuleKeyword: "keyword", RuleRegexp: "regexp", RuleDotless: "dotless",
-		RuleGeoSite: "geosite", RuleExt: "ext"}
+		RuleGeoSite: "geosite", RuleExt: "ext", RulePort: "port"}
 	if int(k) < len(names) && names[k] != "" {
 		return names[k]
 	}
@@ -64,8 +67,14 @@ func (k RuleKind) String() string {
 // []Rule, checked as it is decoded, for CompileRules.
 type Rule struct {
 	Kind RuleKind
-	// Prefix is the address range of RuleIP.
+	// Prefix is the address range of RuleIP, or with Last the first address
+	// of its range.
 	Prefix netip.Prefix
+	// Last, if valid, is the last address of a RuleIP that holds the
+	// addresses from Prefix, a single address, to Last, as in
+	// 10.0.0.1-10.0.0.50. A range that is a CIDR prefix is written as the
+	// prefix instead.
+	Last netip.Addr
 	// Value is the domain, text or regular expression of the domain kinds.
 	Value string
 	// File is the geodata file of RuleExt, and of RuleGeoIP and RuleGeoSite
@@ -85,6 +94,11 @@ type Rule struct {
 	// configuration, as JSON, keeps its meaning for any Compiler. ParseRule
 	// reads it as RuleKeyword, as rule lists mean it.
 	Plain bool
+	// Ports, if any, are the ports the rule matches, sorted and merged;
+	// none means every port, but for RulePort. Regexp: and ext rules have
+	// none. See Matcher for how queries without a port match them. The rules that Find and Decide return share it with
+	// their Matcher, so that they do not allocate: copy it to change it.
+	Ports []PortRange
 }
 
 var (
@@ -120,6 +134,235 @@ func isComment(s string) bool {
 // parseRule parses s, reading a domain without a kind as a rule of kind
 // plain: RuleKeyword, RuleDomain or RuleFull.
 func parseRule(s string, plain RuleKind) (Rule, error) {
+	r, err := parsePortRule(trimRule(strings.ReplaceAll(s, "：", ":")), plain)
+	var se *SyntaxError
+	if errors.As(err, &se) {
+		// The offset in the rule as written, where a full-width colon
+		// takes three bytes.
+		orig, off := trimRule(s), 0
+		for j := 0; j < se.Offset && off < len(orig); j++ {
+			if strings.HasPrefix(orig[off:], "：") {
+				off += len("：")
+			} else {
+				off++
+			}
+		}
+		se.Offset = off
+	}
+	return r, err
+}
+
+// parsePortRule parses s, trimmed and with full-width colons read: the
+// rules of parseClassic, with ports after those that can have them, address
+// ranges and port rules.
+func parsePortRule(s string, plain RuleKind) (Rule, error) {
+	if isComment(s) {
+		return Rule{}, errNoRule
+	}
+	kind, value, ok := strings.Cut(s, ":")
+	if ok {
+		switch strings.ToLower(kind) {
+		case "geoip", "geosite", "full", "domain", "keyword", "dotless":
+			value, ports, hasPorts := strings.Cut(value, ":")
+			r, err := parseClassic(kind+":"+value, plain)
+			if err != nil || !hasPorts {
+				return r, err
+			}
+			return withPorts(r, ports, true, len(kind)+len(value)+2)
+		case "regexp", "ext", "ext-ip", "ext-domain":
+			return parseClassic(s, plain)
+		}
+		if strings.Count(s, ":") == 1 && isKindName(kind) && !isPortList(value) && !strings.HasPrefix(value, "//") {
+			return Rule{}, fmt.Errorf("unknown rule kind %q", kind)
+		}
+	}
+	return parsePlainPorts(s, plain)
+}
+
+// isRuleKind reports whether s, lowercase, is the kind of a rule.
+func isRuleKind(s string) bool {
+	switch s {
+	case "geoip", "ext-ip", "geosite", "ext-domain", "ext", "full", "domain", "keyword", "regexp", "dotless":
+		return true
+	}
+	return false
+}
+
+// isPortList reports whether s looks like a port list, as after host: in
+// host:80,443 or host:8000-9000.
+func isPortList(s string) bool {
+	return s != "" && strings.Trim(s, "0123456789,- \t") == ""
+}
+
+// parsePlainPorts parses a rule without a kind, with its ports.
+func parsePlainPorts(s string, plain RuleKind) (Rule, error) {
+	if strings.HasPrefix(s, "//") || strings.Contains(s, "://") {
+		// A URL: its host, as before, and its port if it has one.
+		r, err := parsePlain(s, plain)
+		if err != nil {
+			return r, err
+		}
+		_, port, off := portText(s)
+		if err := checkPlainText(r, port != ""); err != nil {
+			return Rule{}, err
+		}
+		if port != "" && port[0] != ':' {
+			return Rule{}, syntaxErr(off, "unexpected text after ]")
+		}
+		return withPorts(r, strings.TrimPrefix(port, ":"), port != "", off+1)
+	}
+	if strings.HasPrefix(s, "[") {
+		end := strings.IndexByte(s, ']')
+		if end < 0 {
+			return Rule{}, syntaxErr(0, "[ without ]")
+		}
+		r, err := parseAddrRange(s[1:end], 1)
+		if err != nil {
+			return r, err
+		}
+		switch rest := s[end+1:]; {
+		case rest == "":
+			return r, nil
+		case rest[0] == ':':
+			return withPorts(r, rest[1:], true, end+2)
+		default:
+			return Rule{}, syntaxErr(end+1, "unexpected text after ]")
+		}
+	}
+	addr, ports, has := s, "", false
+	switch n := strings.Count(s, ":"); {
+	case n == 1:
+		addr, ports, has = strings.Cut(s, ":")
+		if strings.TrimSpace(addr) == "*" {
+			// A port rule: every address on the ports.
+			r, err := withPorts(Rule{Kind: RulePort}, ports, true, len(addr)+1)
+			if err == nil && r.Ports == nil {
+				r.Ports = allPorts
+			}
+			return r, err
+		}
+	case n > 1:
+		// A bare IPv6 address, prefix or range, which has no port.
+		r, err := parseAddrRange(s, 0)
+		if err != nil {
+			i := strings.LastIndexByte(s, ':')
+			if _, e := parseAddrRange(s[:i], 0); e == nil && isPortList(s[i+1:]) {
+				return Rule{}, syntaxErr(i, "ports after an IPv6 address need brackets: [%s]:%s", s[:i], s[i+1:])
+			}
+		}
+		return r, err
+	}
+	var r Rule
+	var err error
+	if isAddrRange(addr) {
+		r, err = parseAddrRange(addr, 0)
+	} else {
+		r, err = parsePlain(addr, plain)
+	}
+	if err != nil {
+		return r, err
+	}
+	if err := checkPlainText(r, has); err != nil {
+		return Rule{}, err
+	}
+	return withPorts(r, ports, has, len(addr)+1)
+}
+
+// checkPlainText rejects a domain without a kind that, written with
+// ports if it has them, would read as another rule.
+func checkPlainText(r Rule, ports bool) error {
+	switch {
+	case !r.Plain:
+	case isAddrRange(r.text()):
+		// An address before a -, as 10.0.0.1-x, is a range that does not
+		// parse, rather than a host.
+		return syntaxErr(0, "invalid address range %q", r.text())
+	case ports && isRuleKind(r.text()):
+		return syntaxErr(0, "host %q with ports is a rule kind; write it with a kind, as keyword:%s:", r.Value, r.Value)
+	}
+	return nil
+}
+
+// isAddrRange reports whether s is meant as an address range: an IP
+// address before a -.
+func isAddrRange(s string) bool {
+	from, _, ok := strings.Cut(s, "-")
+	if !ok || strings.Contains(s, "/") {
+		return false
+	}
+	_, err := netip.ParseAddr(strings.TrimSpace(from))
+	return err == nil
+}
+
+// parseAddrRange parses an IP address, a CIDR prefix or a range of
+// addresses first-last, which starts at byte off of the rule.
+func parseAddrRange(s string, off int) (Rule, error) {
+	if from, to, ok := strings.Cut(s, "-"); ok {
+		first, err := parseRangeAddr(from, off)
+		if err != nil {
+			return Rule{}, err
+		}
+		last, err := parseRangeAddr(to, off+len(from)+1)
+		if err != nil {
+			return Rule{}, err
+		}
+		r, err := rangeRule(first, last)
+		if err != nil {
+			return Rule{}, syntaxErr(off, "%v", err)
+		}
+		return r, nil
+	}
+	if strings.Contains(s, "/") {
+		p, err := netip.ParsePrefix(s)
+		if err != nil {
+			return Rule{}, syntaxErr(off, "invalid CIDR prefix %q", s)
+		}
+		return Rule{Kind: RuleIP, Prefix: normalPrefix(p)}, nil
+	}
+	ip, err := parseRangeAddr(s, off)
+	if err != nil {
+		return Rule{}, err
+	}
+	return Rule{Kind: RuleIP, Prefix: netip.PrefixFrom(ip, ip.BitLen())}, nil
+}
+
+// parseRangeAddr parses an address of a range, with spaces around it and
+// an IPv6 zone, which is dropped, at byte off of the rule.
+func parseRangeAddr(s string, off int) (netip.Addr, error) {
+	t := strings.TrimLeft(s, " \t")
+	off += len(s) - len(t)
+	t = strings.TrimRight(t, " \t")
+	ip, err := netip.ParseAddr(t)
+	if err != nil {
+		if i := strings.LastIndexByte(t, '%'); i > 0 {
+			// A zone percent-encoded, as in [fe80::1%25eth0].
+			ip, err = netip.ParseAddr(t[:i])
+		}
+		if err != nil {
+			return netip.Addr{}, syntaxErr(off, "invalid IP address %q", t)
+		}
+	}
+	return normalAddr(ip), nil
+}
+
+// withPorts sets the ports of r, written as text at byte off of the rule,
+// if has.
+func withPorts(r Rule, text string, has bool, off int) (Rule, error) {
+	if !has {
+		return r, nil
+	}
+	ports, err := parsePorts(text, off)
+	if err != nil {
+		return Rule{}, err
+	}
+	r.Ports = ports
+	return r, nil
+}
+
+// parseClassic parses s without its ports, address ranges and port rules,
+// which parsePortRule reads, reading a domain without a kind as a rule of
+// kind plain.
+func parseClassic(s string, plain RuleKind) (Rule, error) {
 	s = trimRule(strings.ReplaceAll(s, "：", ":"))
 	if isComment(s) {
 		return Rule{}, errNoRule
@@ -299,6 +542,27 @@ func normalPrefix(p netip.Prefix) netip.Prefix {
 //
 //goland:noinspection GoMixedReceiverTypes
 func (r Rule) String() string {
+	if r.Kind == RulePort {
+		ports := r.Ports
+		if len(ports) == 0 {
+			ports = allPorts
+		}
+		return "*:" + portsText(ports)
+	}
+	s := r.text()
+	if len(r.Ports) == 0 || s == "" {
+		return s
+	}
+	if r.Kind == RuleIP && r.Prefix.Addr().Is6() {
+		s = "[" + s + "]"
+	}
+	return s + ":" + portsText(r.Ports)
+}
+
+// text returns the rule without its ports.
+//
+//goland:noinspection GoMixedReceiverTypes
+func (r Rule) text() string {
 	code := lowerASCII(r.Code)
 	if r.Negate {
 		code = "!" + code
@@ -313,12 +577,15 @@ func (r Rule) String() string {
 			return r.Value
 		case RuleSubdomain:
 			return "." + r.Value
-		case RuleIP, RuleGeoIP, RuleRegexp, RuleDotless, RuleGeoSite, RuleExt:
+		case RuleIP, RuleGeoIP, RuleRegexp, RuleDotless, RuleGeoSite, RuleExt, RulePort:
 			// Never plain: written with their kind below.
 		}
 	}
 	switch r.Kind {
 	case RuleIP:
+		if r.Last.IsValid() {
+			return r.Prefix.Addr().String() + "-" + r.Last.String()
+		}
 		if r.Prefix.IsSingleIP() {
 			return r.Prefix.Addr().String()
 		}
@@ -359,14 +626,14 @@ func (r Rule) String() string {
 //
 //goland:noinspection GoMixedReceiverTypes
 func (r Rule) IsIP() bool {
-	return r.Kind == RuleIP || r.Kind == RuleGeoIP || r.Kind == RuleExt
+	return r.Kind == RuleIP || r.Kind == RuleGeoIP || r.Kind == RuleExt || r.Kind == RulePort
 }
 
 // IsDomain reports whether the rule matches domain names.
 //
 //goland:noinspection GoMixedReceiverTypes
 func (r Rule) IsDomain() bool {
-	return r.Kind >= RuleFull && r.Kind <= RuleExt
+	return r.Kind >= RuleFull && r.Kind <= RulePort
 }
 
 // MarshalText returns the rule as String writes it, or an error for the
@@ -374,7 +641,7 @@ func (r Rule) IsDomain() bool {
 //
 //goland:noinspection GoMixedReceiverTypes
 func (r Rule) MarshalText() ([]byte, error) {
-	if r.Kind < RuleIP || r.Kind > RuleExt {
+	if r.Kind < RuleIP || r.Kind > RulePort {
 		return nil, fmt.Errorf("geomatch: cannot write rule kind %d", r.Kind)
 	}
 	return []byte(r.String()), nil

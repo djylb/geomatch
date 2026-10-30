@@ -128,7 +128,7 @@ func ExampleCompiler() {
 		}
 	}
 	// Output:
-	// invalid: regexp:^ads - regexp rules are not allowed here (allowed: ip, geoip, full, domain, subdomain, keyword, dotless, geosite, ext)
+	// invalid: regexp:^ads - regexp rules are not allowed here (allowed: ip, geoip, full, domain, subdomain, keyword, dotless, geosite, ext, port)
 	// invalid: ext:/etc/geo.dat:cn - geodata file not allowed: /etc/geo.dat is not a local name
 	// no data: geosite:cn
 }

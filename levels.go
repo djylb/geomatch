@@ -45,6 +45,10 @@ func (l Levels) Allows(addr string) bool { return l.allows(addrTarget(addr)) }
 // AllowsIP reports whether the levels allow ip.
 func (l Levels) AllowsIP(ip netip.Addr) bool { return l.allows(ipTarget(ip)) }
 
+// AllowsAddrPort reports whether the levels allow the address and port of
+// ap.
+func (l Levels) AllowsAddrPort(ap netip.AddrPort) bool { return l.allows(addrPortTarget(ap)) }
+
 // AllowsDomain reports whether the levels allow host.
 func (l Levels) AllowsDomain(host string) bool { return l.allows(domainTarget(host)) }
 
@@ -64,6 +68,9 @@ func (l Levels) Decide(addr string) Decision { return l.decide(addrTarget(addr))
 
 // DecideIP is Decide for an IP address.
 func (l Levels) DecideIP(ip netip.Addr) Decision { return l.decide(ipTarget(ip)) }
+
+// DecideAddrPort is Decide for an address and port.
+func (l Levels) DecideAddrPort(ap netip.AddrPort) Decision { return l.decide(addrPortTarget(ap)) }
 
 // DecideDomain is Decide for a domain name.
 func (l Levels) DecideDomain(host string) Decision { return l.decide(domainTarget(host)) }
@@ -92,6 +99,16 @@ func (l Levels) HasIPRules() bool {
 func (l Levels) HasDomainRules() bool {
 	for _, p := range l.Policies {
 		if p.HasDomainRules() {
+			return true
+		}
+	}
+	return false
+}
+
+// HasPortRules reports whether a level has rules with ports.
+func (l Levels) HasPortRules() bool {
+	for _, p := range l.Policies {
+		if p.HasPortRules() {
 			return true
 		}
 	}
