@@ -38,6 +38,10 @@ type Compiler struct {
 	// The zero value, ExtAny, allows any; other rules fail with
 	// ErrExtDenied. Relative names are looked up as GeoFiles.Dir tells.
 	ExtFiles ExtAccess
+	// NoPorts rejects rules that name ports, port: rules included, with
+	// ErrPortsDisabled, for lists that match addresses whose port means
+	// nothing, such as those of clients.
+	NoPorts bool
 	// Limits bound the rules of one call; rules beyond them fail with
 	// ErrLimit.
 	Limits Limits
@@ -354,6 +358,9 @@ func (rd *ruleReader) accept(r Rule) error {
 	c, lim := rd.c, &rd.c.Limits
 	if !c.Kinds.Has(r.Kind) {
 		return &KindError{Kind: r.Kind, Allowed: c.Kinds}
+	}
+	if c.NoPorts && len(r.Ports) > 0 {
+		return ErrPortsDisabled
 	}
 	if r.File != "" {
 		if err := c.ExtFiles.check(r.File, rd.view); err != nil {

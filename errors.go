@@ -19,6 +19,9 @@ var (
 	// ErrExtDenied is the cause of an ext: rule whose file Compiler.ExtFiles
 	// does not allow. It is an ErrInvalidRule.
 	ErrExtDenied = classed("geodata file not allowed", ErrInvalidRule)
+	// ErrPortsDisabled is the cause of a rule that names ports when
+	// Compiler.NoPorts is set. It is an ErrInvalidRule.
+	ErrPortsDisabled = classed("ports not allowed", ErrInvalidRule)
 	// ErrLimit is the cause of a rule beyond Compiler.Limits. It is an
 	// ErrInvalidRule.
 	ErrLimit = classed("rule limit exceeded", ErrInvalidRule)

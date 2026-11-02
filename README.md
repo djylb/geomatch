@@ -392,8 +392,9 @@ untrusted users write. The zero `Compiler` accepts every rule, without
 limits. Common settings:
 
 ```go
-// Rules about client addresses: domain rules could never match them.
-clients := geomatch.Compiler{GeoData: geo, Kinds: geomatch.IPKinds}
+// Rules about client addresses: domain rules could never match them, and
+// a client's source port says nothing about the client.
+clients := geomatch.Compiler{GeoData: geo, Kinds: geomatch.IPKinds, NoPorts: true}
 
 // Rules that users write: no regular expressions, geodata files only from
 // the geodata directory, and bounded in number and size.

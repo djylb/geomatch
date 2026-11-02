@@ -71,6 +71,22 @@ func TestCompilerKinds(t *testing.T) {
 	}
 }
 
+func TestCompilerNoPorts(t *testing.T) {
+	c := Compiler{NoPorts: true}
+	rules := []string{"10.0.0.0/8:22", "*:25", "a.test:443", "10.0.0.0/8", "a.test"}
+	m, err := c.Compile(rules)
+	var errs RuleErrors
+	if !errors.As(err, &errs) || len(errs) != 3 || !errors.Is(err, ErrPortsDisabled) || !errors.Is(err, ErrInvalidRule) {
+		t.Fatalf("Compile errors = %v", err)
+	}
+	if m.Len() != 2 {
+		t.Errorf("Compile kept %v", m.Rules())
+	}
+	if _, err := c.CompileRules([]Rule{{Kind: RulePort, Ports: []PortRange{{First: 80, Last: 80}}}}); !errors.Is(err, ErrPortsDisabled) {
+		t.Errorf("CompileRules of a port rule = %v", err)
+	}
+}
+
 func TestCompilerExtFiles(t *testing.T) {
 	local := []string{"ext:geo.dat:cn", "ext-ip:sub/geoip.dat:cn", "ext-domain:./site.dat:cn"}
 	outside := []string{"ext:/etc/geo.dat:cn", "ext:../geo.dat:cn", `ext:..\geo.dat:cn`, `ext:C:\geo.dat:cn`, "ext-ip:a/../../b.dat:cn"}
