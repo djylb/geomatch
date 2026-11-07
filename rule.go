@@ -135,8 +135,7 @@ func isComment(s string) bool {
 // plain: RuleKeyword, RuleDomain or RuleFull.
 func parseRule(s string, plain RuleKind) (Rule, error) {
 	r, err := parsePortRule(trimRule(strings.ReplaceAll(s, "：", ":")), plain)
-	var se *SyntaxError
-	if errors.As(err, &se) {
+	if se, ok := errors.AsType[*SyntaxError](err); ok {
 		// The offset in the rule as written, where a full-width colon
 		// takes three bytes.
 		orig, off := trimRule(s), 0

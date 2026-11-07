@@ -77,8 +77,7 @@ func ExampleParseRule() {
 func ExampleParseRules() {
 	text := "# rules\ndomain:example.com\nfull:\nfoo*bar\n"
 	_, err := geomatch.ParseRules(geomatch.SplitLines(text))
-	var errs geomatch.RuleErrors
-	if errors.As(err, &errs) {
+	if errs, ok := errors.AsType[geomatch.RuleErrors](err); ok {
 		for _, e := range errs {
 			fmt.Printf("line %d: %v\n", e.Index+1, e.Err)
 		}
@@ -118,8 +117,7 @@ func ExampleCompiler() {
 		Limits:   geomatch.Limits{MaxRules: 100},
 	}
 	_, err := c.Compile([]string{"domain:example.com", "regexp:^ads", "ext:/etc/geo.dat:cn", "geosite:cn"})
-	var errs geomatch.RuleErrors
-	if errors.As(err, &errs) {
+	if errs, ok := errors.AsType[geomatch.RuleErrors](err); ok {
 		for _, e := range errs.Filter(geomatch.ErrInvalidRule) {
 			fmt.Println("invalid:", e.Rule, "-", e.Err)
 		}
