@@ -8,15 +8,16 @@ import (
 	"net"
 	"net/netip"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
 
-func mustPorts(t testing.TB, rules ...string) *Matcher {
-	t.Helper()
+func mustPorts(tb testing.TB, rules ...string) *Matcher {
+	tb.Helper()
 	m, err := Compile(rules)
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	return m
 }
@@ -471,15 +472,16 @@ func TestPortIndexAgrees(t *testing.T) {
 			if rng.IntN(3) == 0 {
 				items = append(items, fmt.Sprintf("%d-%d", p, p+rng.IntN(5)))
 			} else {
-				items = append(items, fmt.Sprint(p))
+				items = append(items, strconv.Itoa(p))
 			}
 		}
 		return strings.Join(items, ",")
 	}
 	for round := range 400 {
 		maxCover = []int{1 << 22, 0}[round%2]
-		var rules []string
-		for range 1 + rng.IntN(20) {
+		n := 1 + rng.IntN(20)
+		rules := make([]string, 0, n)
+		for range n {
 			var r string
 			switch rng.IntN(6) {
 			case 0:

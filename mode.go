@@ -43,9 +43,9 @@ func (m Mode) String() string {
 	case ModeOff:
 		return "off"
 	case ModeAllowlist:
-		return "allowlist"
+		return textAllowlist
 	case ModeDenylist:
-		return "denylist"
+		return textDenylist
 	default:
 		return "mode " + strconv.Itoa(int(m))
 	}
@@ -59,9 +59,9 @@ func ParseMode(s string) (Mode, error) {
 	switch configName(s) {
 	case "off", "none", "disabled", "0", "":
 		return ModeOff, nil
-	case "allowlist", "allow", "whitelist", "1":
+	case textAllowlist, "allow", "whitelist", "1":
 		return ModeAllowlist, nil
-	case "denylist", "deny", "blocklist", "blacklist", "2":
+	case textDenylist, "deny", "blocklist", "blacklist", "2":
 		return ModeDenylist, nil
 	}
 	return ModeOff, fmt.Errorf("geomatch: unknown policy mode %q", s)
@@ -163,9 +163,9 @@ func (p Priority) String() string {
 // an empty string is DenyFirst.
 func ParsePriority(s string) (Priority, error) {
 	switch configName(s) {
-	case "denyfirst", "deny", "denylist", "blacklist", "blocklist", "0", "":
+	case "denyfirst", "deny", textDenylist, "blacklist", "blocklist", "0", "":
 		return DenyFirst, nil
-	case "allowfirst", "allow", "allowlist", "whitelist", "1":
+	case "allowfirst", "allow", textAllowlist, "whitelist", "1":
 		return AllowFirst, nil
 	}
 	return DenyFirst, fmt.Errorf("geomatch: unknown priority %q", s)

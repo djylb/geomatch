@@ -102,10 +102,10 @@ func FuzzParseRule(f *testing.F) {
 
 func TestRuleText(t *testing.T) {
 	var cfg struct {
-		Mode  Mode
-		Rules []Rule
+		Mode  Mode   `json:"mode"`
+		Rules []Rule `json:"rules"`
 	}
-	in := `{"Mode":"denylist","Rules":["GEOIP:CN","*Example.com","10.1.2.3/8","regexp:^ads"]}`
+	in := `{"mode":"denylist","rules":["GEOIP:CN","*Example.com","10.1.2.3/8","regexp:^ads"]}`
 	if err := json.Unmarshal([]byte(in), &cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -120,10 +120,10 @@ func TestRuleText(t *testing.T) {
 		t.Fatalf("CompileRules of decoded rules = %v", m.Rules())
 	}
 	out, err := json.Marshal(cfg)
-	if want := `{"Mode":"denylist","Rules":["geoip:cn","domain:example.com","10.0.0.0/8","regexp:^ads"]}`; err != nil || string(out) != want {
+	if want := `{"mode":"denylist","rules":["geoip:cn","domain:example.com","10.0.0.0/8","regexp:^ads"]}`; err != nil || string(out) != want {
 		t.Fatalf("json.Marshal = %s, %v; want %s", out, err, want)
 	}
-	if err := json.Unmarshal([]byte(`{"Rules":["full:"]}`), &cfg); !errors.Is(err, ErrInvalidRule) {
+	if err := json.Unmarshal([]byte(`{"rules":["full:"]}`), &cfg); !errors.Is(err, ErrInvalidRule) {
 		t.Errorf("invalid rule decoded: %v", err)
 	}
 	if _, err := json.Marshal([]Rule{{}}); err == nil {

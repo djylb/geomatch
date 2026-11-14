@@ -79,7 +79,7 @@ func TestPlainRulesFromJSON(t *testing.T) {
 	if !MustCompile([]string{"ok.com"}).Match("ok.com.evil.net") {
 		t.Error("default plain domain is not a keyword")
 	}
-	if b, _ := json.Marshal(rules); string(b) != `["ok.com",".sub.test","keyword:kw"]` {
+	if b, err := json.Marshal(rules); err != nil || string(b) != `["ok.com",".sub.test","keyword:kw"]` {
 		t.Errorf("Marshal = %s", b)
 	}
 }
@@ -178,7 +178,7 @@ func TestIPSet(t *testing.T) {
 // that a broken file breaks.
 func TestRefreshLivesReport(t *testing.T) {
 	geo := testGeoData(t)
-	var lives []*Live
+	lives := make([]*Live, 0, 5)
 	for i := range 5 {
 		l, err := NewLive(Compiler{GeoData: geo}, []string{"geoip:cn"})
 		if err != nil {
@@ -331,7 +331,7 @@ func TestRefreshLivesChecksOnce(t *testing.T) {
 		"geosite.dat": {Data: encodeDat(datEntry{code: "CN", domains: []Domain{{Type: DomainRoot, Value: "qq.com"}}})},
 	}}
 	geo := NewGeoData(GeoFiles{IP: "geoip.dat", Site: "geosite.dat", FS: fsys})
-	var lives []*Live
+	lives := make([]*Live, 0, 20)
 	for _, rules := range [][]string{{"geoip:cn"}, {"geosite:cn"}} {
 		for range 10 {
 			l, err := NewLive(Compiler{GeoData: geo}, rules)

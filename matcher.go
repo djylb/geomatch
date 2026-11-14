@@ -35,13 +35,13 @@ type Matcher struct {
 	inverse   []*ipSet     // geoip:!code and reverse_match entries
 	domSets   []*domainSet // domain rules, then geosite entries shared through GeoData
 	ports     *portIndex   // the rules with ports, or nil
-	anyAddr   bool         // of a Matcher of ports: a port rule matches every address
 	ipRules   int
 	domRules  int
 	portRules int
 
 	probes  []probe       // one per compiled rule, in order, for Find
 	once    sync.Once     // builds explain
+	anyAddr bool          // of a Matcher of ports: a port rule matches every address
 	explain *explainIndex // finds the first rule that matches, for Find
 
 	snapshot // the geodata it was compiled from, for Stale

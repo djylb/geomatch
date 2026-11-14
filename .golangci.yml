@@ -1,0 +1,100 @@
+version: "2"
+
+linters:
+  default: all
+  disable:
+    # Formatting and naming style that gofmt and the code's idiom already
+    # settle: blank-line placement, short names in short scopes, the
+    # if err := f(); err != nil form, embedded-field spacing.
+    - wsl
+    - wsl_v5
+    - nlreturn
+    - varnamelen
+    - noinlineerr
+    - embeddedstructfieldcheck
+    - lll
+    # Zero values are ready to use throughout the package; literals name
+    # only the fields they set.
+    - exhaustruct
+    - exhaustruct_v5
+    # Functions are ordered by topic, next to the code they serve.
+    - funcorder
+    # The hot paths are written out in one function on purpose, so that
+    # the fast path stays inlined and free of calls; size metrics flag
+    # exactly those.
+    - cyclop
+    - gocognit
+    - gocyclo
+    - nestif
+    - funlen
+    - maintidx
+    # Tests measure timing and use synctest bubbles; running them in
+    # parallel would distort what they measure. Internal tests need the
+    # package's unexported state.
+    - paralleltest
+    - tparallel
+    - testpackage
+    # The wrappers return the errors of the connections they wrap as they
+    # are, so that callers see the same errors as without them.
+    - wrapcheck
+    # Limiter is the package's interface: constructors and views return it.
+    - ireturn
+    # Rule and geodata errors carry their own text, which RuleError wraps
+    # with the rule and classed or withClass marks with the class that
+    # errors.Is tests; a sentinel for each message would add names nobody
+    # tests for.
+    - err113
+    # Named results document what a function returns.
+    - nonamedreturns
+    # Package state is deliberate: the private address prefixes and the
+    # compiled forms of the built-in sets.
+    - gochecknoglobals
+    # Constants are explained where they are used.
+    - mnd
+    # Type assertions follow a classification of the Limiter's kind; a
+    # mismatch is a bug that must panic.
+    - forcetypeassert
+    # No import rules: the module has no dependencies.
+    - depguard
+    # Deprecated, replaced by gomodguard_v2.
+    - gomodguard
+  settings:
+    govet:
+      enable-all: true
+      disable:
+        # Checked on its own, as fieldalignment; what remains are
+        # pointer-byte reports, for which fields keep their order of
+        # meaning.
+        - fieldalignment
+    exhaustive:
+      default-signifies-exhaustive: true
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+  exclusions:
+    rules:
+      # Tests repeat their case names and rule texts, name Chinese domains
+      # to test internationalized names, write map keys with the spaces
+      # that the parsers trim, and have no need of strong random numbers
+      # or of checked conversions in their generated data.
+      - path: _test\.go
+        linters:
+          - goconst
+          - gosmopolitan
+      - path: _test\.go
+        linters:
+          - gocritic
+        text: mapKey
+      - path: _test\.go
+        linters:
+          - gosec
+        text: "G115|G204|G304|G404"
+      # The examples read geodata files that are not there, so they are
+      # compiled but cannot print output.
+      - path: example_test\.go
+        linters:
+          - testableexamples
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

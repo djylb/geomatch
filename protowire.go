@@ -52,13 +52,13 @@ func (r *protoReader) varint() uint64 {
 // bytes reads a length-delimited field value, which aliases the message.
 func (r *protoReader) bytes() []byte {
 	size, n := binary.Uvarint(r.b)
-	if n <= 0 || size > uint64(len(r.b)-n) {
+	if n <= 0 || size > nonNeg(len(r.b)-n) {
 		r.err = errProto
 		return nil
 	}
-	v := r.b[n : n+int(size)]
-	r.b = r.b[n+int(size):]
-	return v
+	rest := r.b[n:]
+	r.b = rest[size:]
+	return rest[:size]
 }
 
 // skip skips a field value of wire type typ.

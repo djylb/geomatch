@@ -255,7 +255,7 @@ func decodeCIDR(msg []byte) (netip.Prefix, bool) {
 		}
 	}
 	addr, ok := netip.AddrFromSlice(ip)
-	if r.err != nil || !ok || bits > uint64(addr.BitLen()) {
+	if r.err != nil || !ok || bits > nonNeg(addr.BitLen()) {
 		return netip.Prefix{}, false
 	}
 	return netip.PrefixFrom(addr, int(bits)).Masked(), true
@@ -326,6 +326,8 @@ func decodeDomain(msg []byte) (Domain, bool) {
 	case DomainKeyword:
 		// A keyword is text, whose trailing dot, as in "google.", matters.
 		d.Value = strings.ToLower(d.Value)
+	case DomainRegexp:
+		// A pattern, kept as written.
 	}
 	if d.Value == "" {
 		return Domain{}, false

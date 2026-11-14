@@ -27,7 +27,7 @@ func FuzzCompileAndMatch(f *testing.F) {
 			t.Fatalf("rule %q: FindHostIP(%q, %v) = %v disagrees", rule, addr, ip, ok)
 		}
 		other := MustCompile([]string{"keyword:b", "10.1.0.0/16"})
-		var policies []Policy
+		policies := make([]Policy, 0, 8)
 		for _, pr := range []Priority{DenyFirst, AllowFirst} {
 			policies = append(policies, Policy{Allow: m, Priority: pr}, Policy{Deny: m, Priority: pr},
 				Policy{Allow: m, Deny: other, Priority: pr}, Policy{Allow: other, Deny: m, Priority: pr})

@@ -272,7 +272,6 @@ func TestRefreshLives(t *testing.T) {
 		if r := geo.RefreshLives(); r.Changed() {
 			t.Fatalf("second RefreshLives = %+v", r)
 		}
-
 	}()
 
 	// Lives that the program dropped leave the list.

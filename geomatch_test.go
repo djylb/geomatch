@@ -24,11 +24,11 @@ type datEntry struct {
 
 // writeDat writes entries as a GeoIPList or GeoSiteList file into dir and
 // returns its path.
-func writeDat(t testing.TB, dir, name string, entries ...datEntry) string {
-	t.Helper()
+func writeDat(tb testing.TB, dir, name string, entries ...datEntry) string {
+	tb.Helper()
 	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, encodeDat(entries...), 0o600); err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	return path
 }
@@ -62,15 +62,15 @@ func encodeDat(entries ...datEntry) []byte {
 	return out
 }
 
-func testGeoData(t testing.TB) *GeoData {
-	t.Helper()
-	dir := t.TempDir()
-	ip := writeDat(t, dir, "geoip.dat",
+func testGeoData(tb testing.TB) *GeoData {
+	tb.Helper()
+	dir := tb.TempDir()
+	ip := writeDat(tb, dir, "geoip.dat",
 		datEntry{code: "CN", cidrs: []string{"1.2.3.0/24", "2001:db8::/32", "::ffff:5.6.7.0/120"}},
 		datEntry{code: "US", cidrs: []string{"8.8.8.0/24"}},
 		datEntry{code: "ODD", cidrs: []string{"9.9.9.0/24"}, inverse: true},
 	)
-	site := writeDat(t, dir, "geosite.dat",
+	site := writeDat(tb, dir, "geosite.dat",
 		datEntry{code: "CN", domains: []Domain{
 			{Type: DomainRoot, Value: "qq.com", Attrs: []string{"cn"}},
 			{Type: DomainFull, Value: "Exact.CN"},
@@ -177,8 +177,9 @@ func TestCompileErrors(t *testing.T) {
 	if m.Len() != 1 || !m.Match("192.0.2.1") {
 		t.Fatalf("valid rule lost: Len() = %d", m.Len())
 	}
-	var ruleErrs []string
-	for _, e := range err.(interface{ Unwrap() []error }).Unwrap() {
+	causes := err.(interface{ Unwrap() []error }).Unwrap()
+	ruleErrs := make([]string, 0, len(causes))
+	for _, e := range causes {
 		var re *RuleError
 		if !errors.As(e, &re) {
 			t.Fatalf("error %v is not a *RuleError", e)
@@ -347,7 +348,7 @@ func TestParseRules(t *testing.T) {
 	if !errors.As(err, &errs) {
 		t.Fatalf("ParseRules() error = %v", err)
 	}
-	var indexes []int
+	indexes := make([]int, 0, len(errs))
 	for _, e := range errs {
 		indexes = append(indexes, e.Index)
 	}
@@ -368,8 +369,9 @@ func TestIPSetAgainstNaive(t *testing.T) {
 	r := rand.New(rand.NewPCG(1, 2))
 	for range 50 {
 		var b ipSetBuilder
-		var prefixes []netip.Prefix
-		for range r.IntN(40) + 1 {
+		n := r.IntN(40) + 1
+		prefixes := make([]netip.Prefix, 0, n)
+		for range n {
 			var p netip.Prefix
 			if r.IntN(2) == 0 {
 				a := netip.AddrFrom4([4]byte{byte(r.IntN(4)), byte(r.IntN(256)), byte(r.IntN(256)), byte(r.IntN(256))})

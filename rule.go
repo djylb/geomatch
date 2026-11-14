@@ -50,9 +50,9 @@ const (
 // String returns the name of k, the prefix of its rules: ip, geoip, full,
 // domain, subdomain, keyword, regexp, dotless, geosite or ext.
 func (k RuleKind) String() string {
-	names := [...]string{RuleIP: "ip", RuleGeoIP: "geoip", RuleFull: "full", RuleDomain: "domain",
-		RuleSubdomain: "subdomain", RuleKeyword: "keyword", RuleRegexp: "regexp", RuleDotless: "dotless",
-		RuleGeoSite: "geosite", RuleExt: "ext", RulePort: "port"}
+	names := [...]string{RuleIP: "ip", RuleGeoIP: textGeoIP, RuleFull: textFull, RuleDomain: textDomain,
+		RuleSubdomain: "subdomain", RuleKeyword: textKeyword, RuleRegexp: textRegexp, RuleDotless: textDotless,
+		RuleGeoSite: textGeoSite, RuleExt: textExt, RulePort: "port"}
 	if int(k) < len(names) && names[k] != "" {
 		return names[k]
 	}
@@ -66,7 +66,6 @@ func (k RuleKind) String() string {
 // A Rule reads and writes itself as text, so that configuration can hold
 // []Rule, checked as it is decoded, for CompileRules.
 type Rule struct {
-	Kind RuleKind
 	// Prefix is the address range of RuleIP, or with Last the first address
 	// of its range.
 	Prefix netip.Prefix
@@ -86,6 +85,13 @@ type Rule struct {
 	// Attrs are the attributes that every domain of a geosite entry must
 	// have, lowercase and sorted.
 	Attrs []string
+	// Ports, if any, are the ports the rule matches, sorted and merged;
+	// none means every port, but for RulePort. Regexp: and ext rules have
+	// none. See Matcher for how queries without a port match them. The rules that Find and Decide return share it with
+	// their Matcher, so that they do not allocate: copy it to change it.
+	Ports []PortRange
+	// Kind is what the rule matches and how its value reads.
+	Kind RuleKind
 	// Negate inverts a geoip entry: the rule matches the addresses outside it.
 	Negate bool
 	// Plain marks a domain written without a kind, such as example.com,
@@ -94,11 +100,6 @@ type Rule struct {
 	// configuration, as JSON, keeps its meaning for any Compiler. ParseRule
 	// reads it as RuleKeyword, as rule lists mean it.
 	Plain bool
-	// Ports, if any, are the ports the rule matches, sorted and merged;
-	// none means every port, but for RulePort. Regexp: and ext rules have
-	// none. See Matcher for how queries without a port match them. The rules that Find and Decide return share it with
-	// their Matcher, so that they do not allocate: copy it to change it.
-	Ports []PortRange
 }
 
 var (
@@ -161,14 +162,14 @@ func parsePortRule(s string, plain RuleKind) (Rule, error) {
 	kind, value, ok := strings.Cut(s, ":")
 	if ok {
 		switch strings.ToLower(kind) {
-		case "geoip", "geosite", "full", "domain", "keyword", "dotless":
-			value, ports, hasPorts := strings.Cut(value, ":")
-			r, err := parseClassic(kind+":"+value, plain)
+		case textGeoIP, textGeoSite, textFull, textDomain, textKeyword, textDotless:
+			plainValue, ports, hasPorts := strings.Cut(value, ":")
+			r, err := parseClassic(kind+":"+plainValue, plain)
 			if err != nil || !hasPorts {
 				return r, err
 			}
-			return withPorts(r, ports, true, len(kind)+len(value)+2)
-		case "regexp", "ext", "ext-ip", "ext-domain":
+			return withPorts(r, ports, true, len(kind)+len(plainValue)+2)
+		case textRegexp, textExt, textExtIP, textExtDomain:
 			return parseClassic(s, plain)
 		}
 		if strings.Count(s, ":") == 1 && isKindName(kind) && !isPortList(value) && !strings.HasPrefix(value, "//") {
@@ -181,7 +182,7 @@ func parsePortRule(s string, plain RuleKind) (Rule, error) {
 // isRuleKind reports whether s, lowercase, is the kind of a rule.
 func isRuleKind(s string) bool {
 	switch s {
-	case "geoip", "ext-ip", "geosite", "ext-domain", "ext", "full", "domain", "keyword", "regexp", "dotless":
+	case textGeoIP, textExtIP, textGeoSite, textExtDomain, textExt, textFull, textDomain, textKeyword, textRegexp, textDotless:
 		return true
 	}
 	return false
@@ -371,27 +372,27 @@ func parseClassic(s string, plain RuleKind) (Rule, error) {
 		return parsePlain(s, plain)
 	}
 	switch strings.ToLower(kind) {
-	case "geoip":
+	case textGeoIP:
 		code, negate, err := parseCode(value)
 		return Rule{Kind: RuleGeoIP, Code: code, Negate: negate}, err
-	case "ext-ip":
+	case textExtIP:
 		file, rest, err := splitExt(value)
 		if err != nil {
 			return Rule{}, err
 		}
 		code, negate, err := parseCode(rest)
 		return Rule{Kind: RuleGeoIP, File: file, Code: code, Negate: negate}, err
-	case "geosite":
+	case textGeoSite:
 		code, attrs, err := splitAttrs(value)
 		return Rule{Kind: RuleGeoSite, Code: code, Attrs: attrs}, err
-	case "ext-domain":
+	case textExtDomain:
 		file, rest, err := splitExt(value)
 		if err != nil {
 			return Rule{}, err
 		}
 		code, attrs, err := splitAttrs(rest)
 		return Rule{Kind: RuleGeoSite, File: file, Code: code, Attrs: attrs}, err
-	case "ext":
+	case textExt:
 		file, rest, err := splitExt(value)
 		if err != nil {
 			return Rule{}, err
@@ -402,17 +403,17 @@ func parseClassic(s string, plain RuleKind) (Rule, error) {
 			err = errors.New("! with attributes")
 		}
 		return Rule{Kind: RuleExt, File: file, Code: code, Attrs: attrs, Negate: negate}, err
-	case "full", "domain":
+	case textFull, textDomain:
 		host, err := domainValue(value)
 		k := RuleFull
-		if strings.EqualFold(kind, "domain") {
+		if strings.EqualFold(kind, textDomain) {
 			k = RuleDomain
 		}
 		return Rule{Kind: k, Value: host}, err
-	case "keyword":
+	case textKeyword:
 		text, err := keywordValue(value)
 		return Rule{Kind: RuleKeyword, Value: text}, err
-	case "regexp":
+	case textRegexp:
 		pattern := strings.TrimSpace(value)
 		if pattern == "" {
 			return Rule{}, errEmptyValue
@@ -430,7 +431,7 @@ func parseClassic(s string, plain RuleKind) (Rule, error) {
 			return Rule{}, err
 		}
 		return Rule{Kind: RuleRegexp, Value: pattern}, nil
-	case "dotless":
+	case textDotless:
 		value = strings.TrimSpace(value)
 		if value == "" {
 			return Rule{Kind: RuleDotless}, nil
@@ -566,8 +567,8 @@ func (r Rule) text() string {
 	if r.Negate {
 		code = "!" + code
 	}
-	for _, a := range r.Attrs {
-		code += "@" + a
+	if len(r.Attrs) > 0 {
+		code += "@" + strings.Join(r.Attrs, "@")
 	}
 	if r.Plain {
 		// Without a kind, as written, for the PlainDomain of the Compiler.
@@ -591,12 +592,12 @@ func (r Rule) text() string {
 		return r.Prefix.String()
 	case RuleGeoIP:
 		if r.File != "" {
-			return "ext-ip:" + r.File + ":" + code
+			return textExtIP + ":" + r.File + ":" + code
 		}
 		return "geoip:" + code
 	case RuleGeoSite:
 		if r.File != "" {
-			return "ext-domain:" + r.File + ":" + code
+			return textExtDomain + ":" + r.File + ":" + code
 		}
 		return "geosite:" + code
 	case RuleExt:
@@ -813,7 +814,7 @@ func parseIPv4Wildcard(s string) (netip.Prefix, bool, error) {
 		v, err := strconv.ParseUint(part, 10, 8)
 		if err != nil {
 			// Not an address: a domain such as example.* is not supported.
-			return netip.Prefix{}, false, nil
+			return netip.Prefix{}, false, nil //nolint:nilerr // not an address, which is no error
 		}
 		octets[i] = byte(v)
 		fixed++
@@ -826,11 +827,12 @@ func parseIPv4Wildcard(s string) (netip.Prefix, bool, error) {
 
 // upperASCII and lowerASCII change the case of ASCII letters only, which
 // geodata codes and attributes are made of, so that the change can be undone.
-func upperASCII(s string) string { return mapASCII(s, 'a', 'z', 'A'-'a') }
+func upperASCII(s string) string { return mapASCII(s, 'a', 'z') }
 
-func lowerASCII(s string) string { return mapASCII(s, 'A', 'Z', 'a'-'A') }
+func lowerASCII(s string) string { return mapASCII(s, 'A', 'Z') }
 
-func mapASCII(s string, lo, hi byte, delta int) string {
+// mapASCII flips the case bit of the letters of s from lo to hi.
+func mapASCII(s string, lo, hi byte) string {
 	i := strings.IndexFunc(s, func(r rune) bool { return r >= rune(lo) && r <= rune(hi) })
 	if i < 0 {
 		return s
@@ -838,7 +840,7 @@ func mapASCII(s string, lo, hi byte, delta int) string {
 	b := []byte(s)
 	for ; i < len(b); i++ {
 		if b[i] >= lo && b[i] <= hi {
-			b[i] = byte(int(b[i]) + delta)
+			b[i] ^= 0x20
 		}
 	}
 	return string(b)

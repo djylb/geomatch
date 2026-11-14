@@ -115,11 +115,13 @@ func TestPriorityText(t *testing.T) {
 	if _, err := ParsePriority("both"); err == nil {
 		t.Error("ParsePriority accepted an unknown priority")
 	}
-	var cfg struct{ Priority Priority }
-	if err := json.Unmarshal([]byte(`{"Priority":"whitelist"}`), &cfg); err != nil || cfg.Priority != AllowFirst {
+	var cfg struct {
+		Priority Priority `json:"priority"`
+	}
+	if err := json.Unmarshal([]byte(`{"priority":"whitelist"}`), &cfg); err != nil || cfg.Priority != AllowFirst {
 		t.Fatalf("json.Unmarshal = %v, %v", cfg.Priority, err)
 	}
-	if b, err := json.Marshal(cfg); err != nil || string(b) != `{"Priority":"allow-first"}` {
+	if b, err := json.Marshal(cfg); err != nil || string(b) != `{"priority":"allow-first"}` {
 		t.Fatalf("json.Marshal = %s, %v", b, err)
 	}
 	if _, err := Priority(5).MarshalText(); err == nil || Priority(5).String() != "priority 5" {

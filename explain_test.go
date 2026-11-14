@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"net/netip"
+	"strings"
 	"testing"
 )
 
@@ -23,12 +24,11 @@ func TestExplainIndexAgrees(t *testing.T) {
 	rng := rand.New(rand.NewPCG(1, 2))
 	labels := []string{"a", "b", "ab", "cn", "x", "ba"}
 	name := func() string {
-		n := 1 + rng.IntN(3)
-		s := labels[rng.IntN(len(labels))]
-		for range n - 1 {
-			s += "." + labels[rng.IntN(len(labels))]
+		parts := make([]string, 1+rng.IntN(3))
+		for i := range parts {
+			parts[i] = labels[rng.IntN(len(labels))]
 		}
-		return s
+		return strings.Join(parts, ".")
 	}
 	addr := func() netip.Addr {
 		if rng.IntN(4) == 0 {

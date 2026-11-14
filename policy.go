@@ -21,7 +21,7 @@ import (
 // configuration that has none nil. Any Matcher is a set list, also one of no
 // rules, such as one whose rules were all skipped or rejected for missing
 // geodata or kinds a Compiler does not allow: an allowlist then allows
-// nothing rather than everything, so that rules that fail fail closed.
+// nothing rather than everything, so that failing rules fail closed.
 // Mode.Policy makes the Policy of configuration that has a mode and rules,
 // where an allowlist without rules allows nothing too.
 //

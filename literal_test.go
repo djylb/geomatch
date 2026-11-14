@@ -83,7 +83,7 @@ func TestRegexpPrefilter(t *testing.T) {
 		}
 	}
 	var d domainSet
-	var all []*regexp.Regexp
+	all := make([]*regexp.Regexp, 0, len(patterns))
 	for _, p := range patterns {
 		if _, err := d.addRegexp(p); err != nil {
 			t.Fatal(err)

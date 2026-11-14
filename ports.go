@@ -146,7 +146,7 @@ func portsHold(ports []PortRange, port int32, allow bool) bool {
 	case port == portBad:
 		return !allow
 	}
-	p := uint16(port)
+	p := uint16(port & 0xffff)
 	i, _ := slices.BinarySearchFunc(ports, p, func(r PortRange, p uint16) int {
 		if r.Last < p {
 			return -1
@@ -306,10 +306,10 @@ func newPortIndex(groups []portGroup, all *Matcher) *portIndex {
 	x.cover = make([][]uint32, len(cuts))
 	var prev []uint32
 	for i, c := range cuts {
-		x.starts[i] = uint16(c)
+		x.starts[i] = uint16(c & 0xffff)
 		var list []uint32
 		for g := range groups {
-			if portsHold(groups[g].ports, int32(c), false) {
+			if portsHold(groups[g].ports, int32(c&0xffff), false) {
 				list = append(list, uint32(g))
 			}
 		}
@@ -336,7 +336,7 @@ func (x *portIndex) match(t target, port int32, allow bool) bool {
 		}
 		return false
 	}
-	i, found := slices.BinarySearch(x.starts, uint16(port))
+	i, found := slices.BinarySearch(x.starts, uint16(port&0xffff))
 	if !found {
 		i--
 	}
@@ -408,7 +408,7 @@ func blockEnd(lo u128, size int) u128 {
 func addrOf(v u128, n int) netip.Addr {
 	if n == 32 {
 		var b [4]byte
-		binary.BigEndian.PutUint32(b[:], uint32(v.lo))
+		binary.BigEndian.PutUint32(b[:], uint32(v.lo&0xffffffff))
 		return netip.AddrFrom4(b)
 	}
 	var b [16]byte

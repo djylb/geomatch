@@ -50,37 +50,38 @@ func (e *KindError) Error() string {
 	return fmt.Sprintf("%v rules are not allowed here (allowed: %v)", e.Kind, e.Allowed)
 }
 
+// Is reports whether target is ErrKindDisabled or ErrInvalidRule.
 func (e *KindError) Is(target error) bool {
 	return target == ErrKindDisabled || target == ErrInvalidRule
 }
 
-// classErr is an error that errors.Is also reports as its class.
-type classErr struct {
+// classError is an error that errors.Is also reports as its class.
+type classError struct {
 	msg   string
 	class error
 }
 
-func classed(msg string, class error) error { return &classErr{msg, class} }
+func classed(msg string, class error) error { return &classError{msg, class} }
 
-func (e *classErr) Error() string        { return e.msg }
-func (e *classErr) Is(target error) bool { return target == e.class }
+func (e *classError) Error() string        { return e.msg }
+func (e *classError) Is(target error) bool { return target == e.class }
 
-// causeErr marks err as a cause of class, keeping its message.
-type causeErr struct {
+// causeError marks err as a cause of class, keeping its message.
+type causeError struct {
 	err   error
 	class error
 }
 
-func (e *causeErr) Error() string        { return e.err.Error() }
-func (e *causeErr) Unwrap() error        { return e.err }
-func (e *causeErr) Is(target error) bool { return target == e.class }
+func (e *causeError) Error() string        { return e.err.Error() }
+func (e *causeError) Unwrap() error        { return e.err }
+func (e *causeError) Is(target error) bool { return target == e.class }
 
 // withClass returns err marked as a cause of class, unless it already is.
 func withClass(err, class error) error {
 	if err == nil || errors.Is(err, class) {
 		return err
 	}
-	return &causeErr{err, class}
+	return &causeError{err, class}
 }
 
 // RuleError reports a rule that was rejected or skipped, and why. errors.Is

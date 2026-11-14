@@ -109,21 +109,23 @@ func TestModeText(t *testing.T) {
 			t.Errorf("ParsePriority accepted %q", in)
 		}
 	}
-	var cfg struct{ Mode Mode }
-	if err := json.Unmarshal([]byte(`{"Mode":"whitelist"}`), &cfg); err != nil || cfg.Mode != ModeAllowlist {
+	var cfg struct {
+		Mode Mode `json:"mode"`
+	}
+	if err := json.Unmarshal([]byte(`{"mode":"whitelist"}`), &cfg); err != nil || cfg.Mode != ModeAllowlist {
 		t.Fatalf("json.Unmarshal = %v, %v", cfg.Mode, err)
 	}
-	if b, err := json.Marshal(cfg); err != nil || string(b) != `{"Mode":"allowlist"}` {
+	if b, err := json.Marshal(cfg); err != nil || string(b) != `{"mode":"allowlist"}` {
 		t.Fatalf("json.Marshal = %s, %v", b, err)
 	}
 	for in, want := range map[string]Mode{`2`: ModeDenylist, `0`: ModeOff, `"\u0064eny"`: ModeDenylist, `null`: ModeAllowlist} {
 		cfg.Mode = ModeAllowlist
-		if err := json.Unmarshal([]byte(`{"Mode":`+in+`}`), &cfg); err != nil || cfg.Mode != want {
+		if err := json.Unmarshal([]byte(`{"mode":`+in+`}`), &cfg); err != nil || cfg.Mode != want {
 			t.Errorf("json.Unmarshal(%s) = %v, %v; want %v", in, cfg.Mode, err, want)
 		}
 	}
 	for _, in := range []string{`3`, `true`, `1.5`, `"\x"`, `[]`} {
-		if err := json.Unmarshal([]byte(`{"Mode":`+in+`}`), &cfg); err == nil {
+		if err := json.Unmarshal([]byte(`{"mode":`+in+`}`), &cfg); err == nil {
 			t.Errorf("json.Unmarshal(%s) accepted", in)
 		}
 	}
@@ -222,7 +224,7 @@ func TestMergedEntriesReleased(t *testing.T) {
 		t.Fatalf("%d cached combinations, want 1", count())
 	}
 	runtime.KeepAlive(m)
-	m = nil
+	m = nil //nolint:wastedassign // dropped so that the cached combination can be collected
 	deadline := time.Now().Add(5 * time.Second)
 	for count() != 0 && time.Now().Before(deadline) {
 		runtime.GC()

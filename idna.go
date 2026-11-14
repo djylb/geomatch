@@ -89,7 +89,7 @@ func writePunycode(b *strings.Builder, label string) bool {
 	basic := 0
 	for _, r := range label {
 		if r < utf8.RuneSelf {
-			b.WriteByte(byte(r))
+			b.WriteRune(r)
 			basic++
 		}
 	}
@@ -141,11 +141,11 @@ func writePunycode(b *strings.Builder, label string) bool {
 	return true
 }
 
+// punyDigits are the digits of a punycode number, from value 0 to 35.
+const punyDigits = "abcdefghijklmnopqrstuvwxyz0123456789"
+
 func punyDigit(d int) byte {
-	if d < 26 {
-		return byte('a' + d)
-	}
-	return byte('0' + d - 26)
+	return punyDigits[d]
 }
 
 func punyAdapt(delta, points int, first bool) int {

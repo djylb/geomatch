@@ -45,7 +45,7 @@ func newLiteralIndex(lits []string) *literalIndex {
 		for i := range len(lit) {
 			t, ok := x.nodes[s].step(lit[i])
 			if !ok {
-				t = int32(len(x.nodes))
+				t = int32(len(x.nodes)) //nolint:gosec // a trie of 2^31 nodes would take as many literal bytes
 				x.nodes = append(x.nodes, acNode{})
 				n := &x.nodes[s]
 				at, _ := slices.BinarySearchFunc(n.edges, lit[i], func(e acEdge, b byte) int { return int(e.b) - int(b) })

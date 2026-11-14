@@ -23,6 +23,12 @@ type Compiler struct {
 	// only absolute file names, and other geoip: and geosite: rules fail
 	// with ErrNoGeoData.
 	GeoData *GeoData
+	// Limits bound the rules of one call; rules beyond them fail with
+	// ErrLimit.
+	Limits Limits
+	// Kinds are the rule kinds allowed; the zero KindSet allows all. Other
+	// rules fail with a *KindError, which is an ErrKindDisabled.
+	Kinds KindSet
 	// PlainDomain is the kind of a domain written without a kind, such as
 	// example.com: RuleKeyword, the zero value, matches hosts containing
 	// it, as rule lists usually mean it; RuleDomain matches it and its
@@ -31,9 +37,6 @@ type Compiler struct {
 	// only. Rule.UnmarshalText and the package's functions read it as
 	// RuleKeyword.
 	PlainDomain RuleKind
-	// Kinds are the rule kinds allowed; the zero KindSet allows all. Other
-	// rules fail with a *KindError, which is an ErrKindDisabled.
-	Kinds KindSet
 	// ExtFiles is which files ext:, ext-ip: and ext-domain: rules may name.
 	// The zero value, ExtAny, allows any; other rules fail with
 	// ErrExtDenied. Relative names are looked up as GeoFiles.Dir tells.
@@ -42,9 +45,6 @@ type Compiler struct {
 	// ErrPortsDisabled, for lists that match addresses whose port means
 	// nothing, such as those of clients.
 	NoPorts bool
-	// Limits bound the rules of one call; rules beyond them fail with
-	// ErrLimit.
-	Limits Limits
 }
 
 // KindSet is a set of rule kinds. The zero KindSet stands for every kind.
@@ -346,9 +346,9 @@ func (rd *ruleReader) readRule(r Rule) (Rule, error) {
 func ruleKindText(r *Rule) string {
 	switch {
 	case r.Kind == RuleGeoIP && r.File != "":
-		return "ext-ip"
+		return textExtIP
 	case r.Kind == RuleGeoSite && r.File != "":
-		return "ext-domain"
+		return textExtDomain
 	}
 	return r.Kind.String()
 }

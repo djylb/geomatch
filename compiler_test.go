@@ -126,7 +126,7 @@ func TestCompilerLimits(t *testing.T) {
 	if !errors.As(err, &errs) {
 		t.Fatalf("ParseRules error = %v", err)
 	}
-	var idx []int
+	idx := make([]int, 0, len(errs))
 	for _, e := range errs {
 		if !errors.Is(e, ErrLimit) || !errors.Is(e, ErrInvalidRule) {
 			t.Errorf("error %v is not ErrLimit", e)

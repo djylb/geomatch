@@ -108,19 +108,21 @@ func TestKindError(t *testing.T) {
 }
 
 func TestPriorityJSONNumber(t *testing.T) {
-	var cfg struct{ Priority Priority }
+	var cfg struct {
+		Priority Priority `json:"priority"`
+	}
 	for in, want := range map[string]Priority{`0`: DenyFirst, `1`: AllowFirst, `"1"`: AllowFirst, `"allow-first"`: AllowFirst} {
 		cfg.Priority = 9
-		if err := json.Unmarshal([]byte(`{"Priority":`+in+`}`), &cfg); err != nil || cfg.Priority != want {
+		if err := json.Unmarshal([]byte(`{"priority":`+in+`}`), &cfg); err != nil || cfg.Priority != want {
 			t.Errorf("Unmarshal(%s) = %v, %v", in, cfg.Priority, err)
 		}
 	}
 	cfg.Priority = AllowFirst
-	if err := json.Unmarshal([]byte(`{"Priority":null}`), &cfg); err != nil || cfg.Priority != AllowFirst {
+	if err := json.Unmarshal([]byte(`{"priority":null}`), &cfg); err != nil || cfg.Priority != AllowFirst {
 		t.Errorf("null = %v, %v", cfg.Priority, err)
 	}
 	for _, in := range []string{`2`, `true`, `"x"`} {
-		if err := json.Unmarshal([]byte(`{"Priority":`+in+`}`), &cfg); err == nil {
+		if err := json.Unmarshal([]byte(`{"priority":`+in+`}`), &cfg); err == nil {
 			t.Errorf("Unmarshal(%s) accepted", in)
 		}
 	}

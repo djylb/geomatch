@@ -187,7 +187,7 @@ func legacyIPv4(host string) (netip.Addr, bool) {
 		return netip.Addr{}, false
 	}
 	v |= parts[n-1]
-	return netip.AddrFrom4([4]byte{byte(v >> 24), byte(v >> 16), byte(v >> 8), byte(v)}), true
+	return netip.AddrFrom4([4]byte{byte(v >> 24 & 0xff), byte(v >> 16 & 0xff), byte(v >> 8 & 0xff), byte(v & 0xff)}), true
 }
 
 // legacyNumber parses one part of a legacy IPv4 address.

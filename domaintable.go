@@ -47,13 +47,13 @@ func newDomainTable(names map[string]uint8) *domainTable {
 	}
 	for name, f := range names {
 		t.data = append(t.data, name...)
-		t.ends = append(t.ends, uint32(len(t.data)))
+		t.ends = append(t.ends, uint32(len(t.data))) //nolint:gosec // the names of a geodata file, which is far below 4 GiB
 		t.flags = append(t.flags, f)
 		t.sub = t.sub || f&nameSub != 0
 		h := rollHash(name)
 		i := t.index(h)
 		for t.slots[i] != 0 {
-			i = (i + 1) & uint64(len(t.slots)-1)
+			i = (i + 1) & (nonNeg(len(t.slots)) - 1)
 		}
 		t.slots[i] = h&^0xffffffff | uint64(len(t.ends))
 	}
@@ -66,7 +66,7 @@ func (t *domainTable) index(h uint64) uint64 {
 
 // lookup returns the flags of name, whose rolling hash is h, or 0.
 func (t *domainTable) lookup(h uint64, name string) uint8 {
-	mask := uint64(len(t.slots) - 1)
+	mask := nonNeg(len(t.slots)) - 1
 	for i := t.index(h); ; i = (i + 1) & mask {
 		slot := t.slots[i]
 		if slot == 0 {
@@ -75,7 +75,7 @@ func (t *domainTable) lookup(h uint64, name string) uint8 {
 		if slot&^0xffffffff != h&^0xffffffff {
 			continue
 		}
-		n := uint32(slot) - 1
+		n := uint32(slot&0xffffffff) - 1
 		start := uint32(0)
 		if n > 0 {
 			start = t.ends[n-1]
