@@ -281,7 +281,9 @@ p.Allows(addr)
 
 `Refresh` checks once, for programs that know when files change, and
 `Update` replaces the rules; `NewLiveRules` and `UpdateRules` take parsed
-rules. A program with many `Live`s on one `GeoData`, such as one for each
+rules. `Update` compiles the whole list, also to change one rule, since the
+rules are merged into shared sets that a change rebuilds anyway; its cost is
+linear in the number of rules. A program with many `Live`s on one `GeoData`, such as one for each
 user, refreshes them all with one goroutine, which looks at each file once
 per round and recompiles only the `Live`s whose files changed; a `Live` the
 program drops leaves it by itself. `Live.SetTag` names a `Live` for the

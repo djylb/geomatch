@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -263,6 +264,9 @@ func (c Compiler) CompileRules(rules []Rule) (*Matcher, error) {
 // errors quote them as String writes them.
 func (c Compiler) compile(n int, read func(*ruleReader, int) (string, Rule, error), parsed bool) (*Matcher, error) {
 	b := newBuilder(c.GeoData)
+	// One probe per rule, sized once: growing a large list by append
+	// copies it again and again.
+	b.probes = make([]probe, 0, n)
 	rd := c.reader(b.view)
 	var errs RuleErrors
 	for i := range n {
@@ -279,6 +283,10 @@ func (c Compiler) compile(n int, read func(*ruleReader, int) (string, Rule, erro
 		if err != nil {
 			errs = append(errs, &RuleError{Index: i, Rule: s, Err: err})
 		}
+	}
+	if len(b.probes) < cap(b.probes)/2 {
+		// Mostly comments or skipped rules: keep no room for them.
+		b.probes = slices.Clone(b.probes)
 	}
 	return b.finish(), errs.err()
 }

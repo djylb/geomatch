@@ -146,6 +146,14 @@ func (l *Live) Rules() []string {
 
 // Update replaces the rules and compiles them, replacing the Matcher even if
 // rules are skipped, which the error lists as Compile's does.
+//
+// Update compiles every rule, also to change one: the Matcher merges all
+// address rules into one sorted set and all domain rules into one table, so
+// a change rebuilds them whole either way, and geoip: and geosite: entries
+// are compiled once and shared through the GeoData. Parsing the rule text
+// again is a small share of a compile, which takes time and memory linear
+// in the number of rules, and a cache of parsed rules would hold a second
+// copy of every rule to save it.
 func (l *Live) Update(rules []string) error {
 	rules = slices.Clone(rules)
 	l.mu.Lock()
