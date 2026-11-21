@@ -18,7 +18,7 @@ import (
 //		Default: "proxy",
 //	}
 //
-// Like those of Matcher, its methods come in six forms, by the kind of
+// Like those of Matcher, its methods come in seven forms, by the kind of
 // address. Route returns the target, and Find also which route and rule
 // decided, at more cost when a route matches. Rules with ports match as
 // Matcher matches them: a query without a port takes no route by a rule
@@ -72,6 +72,12 @@ func (r Router[T]) RouteAddrPort(ap netip.AddrPort) T { return r.route(addrPortT
 // RouteDomain returns the target of host, as Matcher.MatchDomain reads it.
 func (r Router[T]) RouteDomain(host string) T { return r.route(domainTarget(host)) }
 
+// RouteDomainPort returns the target of a domain name and port, as
+// Matcher.MatchDomainPort reads them.
+func (r Router[T]) RouteDomainPort(host string, port uint16) T {
+	return r.route(domainPortTarget(host, port))
+}
+
 // RouteNetAddr returns the target of a, as Matcher.MatchNetAddr reads it.
 func (r Router[T]) RouteNetAddr(a net.Addr) T { return r.route(netAddrTarget(a)) }
 
@@ -93,6 +99,11 @@ func (r Router[T]) FindAddrPort(ap netip.AddrPort) Routed[T] { return r.find(add
 
 // FindDomain is Find for a domain name.
 func (r Router[T]) FindDomain(host string) Routed[T] { return r.find(domainTarget(host)) }
+
+// FindDomainPort is Find for a domain name and port.
+func (r Router[T]) FindDomainPort(host string, port uint16) Routed[T] {
+	return r.find(domainPortTarget(host, port))
+}
 
 // FindNetAddr is Find for a net.Addr.
 func (r Router[T]) FindNetAddr(a net.Addr) Routed[T] { return r.find(netAddrTarget(a)) }

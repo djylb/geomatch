@@ -52,6 +52,11 @@ func (l Levels) AllowsAddrPort(ap netip.AddrPort) bool { return l.allows(addrPor
 // AllowsDomain reports whether the levels allow host.
 func (l Levels) AllowsDomain(host string) bool { return l.allows(domainTarget(host)) }
 
+// AllowsDomainPort reports whether the levels allow a domain name and port.
+func (l Levels) AllowsDomainPort(host string, port uint16) bool {
+	return l.allows(domainPortTarget(host, port))
+}
+
 // AllowsNetAddr reports whether the levels allow a.
 func (l Levels) AllowsNetAddr(a net.Addr) bool { return l.allows(netAddrTarget(a)) }
 
@@ -74,6 +79,11 @@ func (l Levels) DecideAddrPort(ap netip.AddrPort) Decision { return l.decide(add
 
 // DecideDomain is Decide for a domain name.
 func (l Levels) DecideDomain(host string) Decision { return l.decide(domainTarget(host)) }
+
+// DecideDomainPort is Decide for a domain name and port.
+func (l Levels) DecideDomainPort(host string, port uint16) Decision {
+	return l.decide(domainPortTarget(host, port))
+}
 
 // DecideNetAddr is Decide for a net.Addr.
 func (l Levels) DecideNetAddr(a net.Addr) Decision { return l.decide(netAddrTarget(a)) }

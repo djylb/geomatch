@@ -25,7 +25,7 @@ import (
 // Mode.Policy makes the Policy of configuration that has a mode and rules,
 // where an allowlist without rules allows nothing too.
 //
-// Like those of Matcher, its methods come in six forms, by the kind of
+// Like those of Matcher, its methods come in seven forms, by the kind of
 // address. Allows reports whether an address is allowed, and Decide also
 // which rule decided, at more cost when a rule matches.
 //
@@ -85,6 +85,12 @@ func (p Policy) AllowsAddrPort(ap netip.AddrPort) bool { return p.allows(addrPor
 // Matcher.MatchDomain reads it.
 func (p Policy) AllowsDomain(host string) bool { return p.allows(domainTarget(host)) }
 
+// AllowsDomainPort reports whether the policy allows a domain name and port,
+// as Matcher.MatchDomainPort reads them.
+func (p Policy) AllowsDomainPort(host string, port uint16) bool {
+	return p.allows(domainPortTarget(host, port))
+}
+
 // AllowsNetAddr reports whether the policy allows a, such as a connection's
 // RemoteAddr, as Matcher.MatchNetAddr reads it.
 func (p Policy) AllowsNetAddr(a net.Addr) bool { return p.allows(netAddrTarget(a)) }
@@ -143,6 +149,11 @@ func (p Policy) DecideAddrPort(ap netip.AddrPort) Decision { return p.decide(add
 
 // DecideDomain is Decide for a domain name.
 func (p Policy) DecideDomain(host string) Decision { return p.decide(domainTarget(host)) }
+
+// DecideDomainPort is Decide for a domain name and port.
+func (p Policy) DecideDomainPort(host string, port uint16) Decision {
+	return p.decide(domainPortTarget(host, port))
+}
 
 // DecideNetAddr is Decide for a net.Addr.
 func (p Policy) DecideNetAddr(a net.Addr) Decision { return p.decide(netAddrTarget(a)) }

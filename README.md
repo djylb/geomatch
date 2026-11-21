@@ -66,14 +66,15 @@ Every query comes in these forms, by what the caller holds. `Levels` have the
 methods of `Policy`, and a `Router` has `Route…` and, with the rule, `Find…`
 in the same forms:
 
-| Input                                  | `Matcher`       | `Matcher`, with the rule | `Policy`         | `Policy`, with the rule |
-|----------------------------------------|-----------------|--------------------------|------------------|-------------------------|
-| address, `host:port` or URL (`string`) | `Match`         | `Find`                   | `Allows`         | `Decide`                |
-| `netip.Addr`                           | `MatchIP`       | `FindIP`                 | `AllowsIP`       | `DecideIP`              |
-| domain name, never read as an IP       | `MatchDomain`   | `FindDomain`             | `AllowsDomain`   | `DecideDomain`          |
-| `net.Addr`, such as a `RemoteAddr`     | `MatchNetAddr`  | `FindNetAddr`            | `AllowsNetAddr`  | `DecideNetAddr`         |
-| domain name and the IP it resolved to  | `MatchHostIP`   | `FindHostIP`             | `AllowsHostIP`   | `DecideHostIP`          |
-| address and port (`netip.AddrPort`)    | `MatchAddrPort` | `FindAddrPort`           | `AllowsAddrPort` | `DecideAddrPort`        |
+| Input                                  | `Matcher`         | `Matcher`, with the rule | `Policy`           | `Policy`, with the rule |
+|----------------------------------------|-------------------|--------------------------|--------------------|-------------------------|
+| address, `host:port` or URL (`string`) | `Match`           | `Find`                   | `Allows`           | `Decide`                |
+| `netip.Addr`                           | `MatchIP`         | `FindIP`                 | `AllowsIP`         | `DecideIP`              |
+| domain name, never read as an IP       | `MatchDomain`     | `FindDomain`             | `AllowsDomain`     | `DecideDomain`          |
+| domain name and port                   | `MatchDomainPort` | `FindDomainPort`         | `AllowsDomainPort` | `DecideDomainPort`      |
+| `net.Addr`, such as a `RemoteAddr`     | `MatchNetAddr`    | `FindNetAddr`            | `AllowsNetAddr`    | `DecideNetAddr`         |
+| domain name and the IP it resolved to  | `MatchHostIP`     | `FindHostIP`             | `AllowsHostIP`     | `DecideHostIP`          |
+| address and port (`netip.AddrPort`)    | `MatchAddrPort`   | `FindAddrPort`           | `AllowsAddrPort`   | `DecideAddrPort`        |
 
 `net.Addr` values are matched without formatting them. `MatchHostIP` matches
 if either the name or the address does, so that an allowlist of `geoip:`
@@ -339,7 +340,8 @@ m.MatchAddrPort(netip.MustParseAddrPort("10.1.2.3:3389")) // true
 A rule without ports matches every port. A query is matched by its port when
 it has one: the port of a `host:port` or `[IPv6]:port` string, of a URL,
 written or the default of `http`, `https`, `ws`, `wss` and `ftp`, of a
-`*net.TCPAddr` or `*net.UDPAddr`, and of a `netip.AddrPort`. Queries without
+`*net.TCPAddr` or `*net.UDPAddr`, of a `netip.AddrPort`, and the port given
+with a domain name to `MatchDomainPort` and its kin. Queries without
 a port, such as a bare host, a `netip.Addr` or a `*net.IPAddr`, leave the
 port open, so that a program that checks addresses only is not denied by
 port rules; a port that cannot be read, such as `host:https`, is denied

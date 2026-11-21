@@ -12,9 +12,9 @@ import (
 // Matcher matches IP addresses and domain names against compiled rules. It
 // is safe for concurrent use. A nil *Matcher matches nothing.
 //
-// Each query comes in six forms, by what the caller holds: a string that
+// Each query comes in seven forms, by what the caller holds: a string that
 // HostOf reads, such as host:port or a URL; a netip.Addr; a domain name that
-// is never read as an IP address; a net.Addr, such as a connection's
+// is never read as an IP address, alone or with a port; a net.Addr, such as a connection's
 // RemoteAddr; a domain name with the IP address it resolved to; and a
 // netip.AddrPort. The Match methods report whether a rule
 // matches, and the Find methods which rule, at more cost.
@@ -22,7 +22,8 @@ import (
 // Rules with ports (Rule.Ports) match a query by its port as well: the port
 // of a host:port or [IPv6]:port string, of a URL, explicit or the default of
 // http, https, ws, wss and ftp, of a *net.TCPAddr or *net.UDPAddr, or of a
-// netip.AddrPort, which MatchAddrPort and FindAddrPort take. A query without
+// netip.AddrPort, which MatchAddrPort and FindAddrPort take, or given with a
+// domain name to MatchDomainPort and FindDomainPort. A query without
 // a port, such as a bare host, a netip.Addr or a *net.IPAddr, matches no
 // rule with ports, and one whose port cannot be read, such as host:https,
 // matches them by address alone, so that a denylist fails closed; a
@@ -64,6 +65,13 @@ func (m *Matcher) MatchAddrPort(ap netip.AddrPort) bool { return m.match(addrPor
 // domain rule. Internationalized names are matched in their xn-- form.
 func (m *Matcher) MatchDomain(host string) bool { return m.match(domainTarget(host), false) }
 
+// MatchDomainPort reports whether host, a domain name, and port match: as
+// MatchDomain reads host, by port as well for the rules with ports, as
+// MatchAddrPort does for an address.
+func (m *Matcher) MatchDomainPort(host string, port uint16) bool {
+	return m.match(domainPortTarget(host, port), false)
+}
+
 // MatchNetAddr reports whether a, such as a connection's RemoteAddr, matches:
 // *net.TCPAddr, *net.UDPAddr and *net.IPAddr are matched by IP address
 // without formatting them, Unix socket addresses match no rule, and other
@@ -94,6 +102,12 @@ func (m *Matcher) FindAddrPort(ap netip.AddrPort) (Rule, bool) {
 
 // FindDomain is Find for a domain name, as MatchDomain reads it.
 func (m *Matcher) FindDomain(host string) (Rule, bool) { return m.find(domainTarget(host), false) }
+
+// FindDomainPort is Find for a domain name and port, as MatchDomainPort
+// reads them.
+func (m *Matcher) FindDomainPort(host string, port uint16) (Rule, bool) {
+	return m.find(domainPortTarget(host, port), false)
+}
 
 // FindNetAddr is Find for a net.Addr, as MatchNetAddr reads it.
 func (m *Matcher) FindNetAddr(a net.Addr) (Rule, bool) { return m.find(netAddrTarget(a), false) }

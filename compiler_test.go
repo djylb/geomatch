@@ -280,3 +280,36 @@ func TestExtAccessUnknown(t *testing.T) {
 		t.Errorf("unknown ExtAccess on a default file = %v", err)
 	}
 }
+
+func TestMatchDomainPort(t *testing.T) {
+	m := MustCompile([]string{"domain:example.com:443", "domain:plain.test"})
+	for _, c := range []struct {
+		host string
+		port uint16
+		want string
+	}{
+		{"www.example.com", 443, "domain:example.com:443"},
+		{"www.example.com", 80, ""},
+		{"plain.test", 22, "domain:plain.test"},
+		{"10.0.0.1", 443, ""}, // an IP address is no domain name
+	} {
+		r, ok := m.FindDomainPort(c.host, c.port)
+		if ok != (c.want != "") || ok && r.String() != c.want || m.MatchDomainPort(c.host, c.port) != ok {
+			t.Errorf("FindDomainPort(%q, %d) = %v, %v; want %q", c.host, c.port, r, ok, c.want)
+		}
+	}
+	allow := Policy{Allow: m}
+	if !allow.AllowsDomainPort("example.com", 443) || allow.AllowsDomainPort("example.com", 80) || !allow.AllowsDomain("example.com") {
+		t.Error("AllowsDomainPort")
+	}
+	if d := (Levels{Policies: []Policy{allow}}).DecideDomainPort("example.com", 443); !d.Allowed || d.Rule.String() != "domain:example.com:443" {
+		t.Errorf("Levels.DecideDomainPort = %+v", d)
+	}
+	r := Router[string]{Routes: []Route[string]{{Matcher: m, Target: "x"}}, Default: "d"}
+	if r.RouteDomainPort("example.com", 443) != "x" || r.FindDomainPort("example.com", 80).Matched {
+		t.Error("Router DomainPort")
+	}
+	if n := testing.AllocsPerRun(100, func() { m.MatchDomainPort("www.example.com", 443) }); n != 0 {
+		t.Errorf("MatchDomainPort allocates %v", n)
+	}
+}

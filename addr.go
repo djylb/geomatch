@@ -252,6 +252,16 @@ func domainTarget(host string) target {
 	return target{host: name, port: port}
 }
 
+// domainPortTarget reads host as a domain name only, as domainTarget does,
+// with port as its port.
+func domainPortTarget(host string, port uint16) target {
+	t := domainTarget(host)
+	if t.host != "" {
+		t.port = int32(port) + 1
+	}
+	return t
+}
+
 // hostIPTarget reads a domain name and an IP address, such as the one it
 // resolved to; either may be missing.
 func hostIPTarget(host string, ip netip.Addr) target {
